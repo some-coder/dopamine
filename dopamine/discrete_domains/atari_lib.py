@@ -539,8 +539,8 @@ class AtariPreprocessing(object):
       transformed_screen: Numpy array. Color-averaged, resized screen.
     """
     if self.frame_skip > 1:
-      self.screen_buffer[0] = np.mean(self.screen_buffer[0],
-                                      self.screen_buffer[1]).astype(np.uint8)
+      self.screen_buffer[0] = \
+        np.mean([self.screen_buffer[0], self.screen_buffer[1]], axis=0).astype(np.uint8)
     
     # TODO(niels): Will this mess with the color order?
     transformed_image = cv2.resize(self.screen_buffer[0],
