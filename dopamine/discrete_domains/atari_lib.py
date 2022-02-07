@@ -53,7 +53,7 @@ import numpy as np
 import tensorflow as tf
 
 
-NATURE_DQN_OBSERVATION_SHAPE = (84, 84)  # Size of downscaled Atari 2600 frame.
+NATURE_DQN_OBSERVATION_SHAPE = (84, 84, 3)  # Size of downscaled Atari 2600 frame.
 NATURE_DQN_DTYPE = tf.uint8  # DType of Atari 2600 observations.
 NATURE_DQN_STACK_SIZE = 4  # Number of frames in the state stack.
 
@@ -373,8 +373,8 @@ class AtariPreprocessing(object):
     # Stores temporary observations used for pooling over two successive
     # frames.
     self.screen_buffer = [
-        np.empty((obs_dims.shape[0], obs_dims.shape[1]), dtype=np.uint8),
-        np.empty((obs_dims.shape[0], obs_dims.shape[1]), dtype=np.uint8)
+        np.empty(obs_dims.shape, dtype=np.uint8),
+        np.empty(obs_dims.shape, dtype=np.uint8)
     ]
 
     self.game_over = False
@@ -384,7 +384,7 @@ class AtariPreprocessing(object):
   def observation_space(self):
     # Return the observation space adjusted to match the shape of the processed
     # observations.
-    return Box(low=0, high=255, shape=(self.screen_size, self.screen_size, 1),
+    return Box(low=0, high=255, shape=(self.screen_size, self.screen_size, 3),
                dtype=np.uint8)
 
   @property
@@ -411,9 +411,11 @@ class AtariPreprocessing(object):
     """
     self.environment.reset()
     self.lives = self.environment.ale.lives()
-    self._fetch_grayscale_observation(self.screen_buffer[0])
+    # self._fetch_grayscale_observation(self.screen_buffer[0])
+    self._fetch_rgb_observation(self.screen_buffer[0])
     self.screen_buffer[1].fill(0)
-    return self._pool_and_resize()
+    # return self._pool_and_resize()
+    return self._color_average_and_resize()
 
   def render(self, mode):
     """Renders the current screen, before preprocessing.
@@ -470,13 +472,15 @@ class AtariPreprocessing(object):
 
       if is_terminal:
         break
-      # We max-pool over the last two frames, in grayscale.
+      # We max-pool over the last two frames, now in RGB.
       elif time_step >= self.frame_skip - 2:
         t = time_step - (self.frame_skip - 2)
-        self._fetch_grayscale_observation(self.screen_buffer[t])
+        # self._fetch_grayscale_observation(self.screen_buffer[t])
+        self._fetch_rgb_observation(self.screen_buffer[t])
 
-    # Pool the last two observations.
-    observation = self._pool_and_resize()
+    # Color-average over the last two observations.
+    # observation = self._pool_and_resize()
+    observation = self._color_average_and_resize()
 
     self.game_over = game_over
     return observation, accumulated_reward, is_terminal, info
@@ -493,6 +497,20 @@ class AtariPreprocessing(object):
       observation: numpy array, the current observation in grayscale.
     """
     self.environment.ale.getScreenGrayscale(output)
+    return output
+
+  def _fetch_rgb_observation(self, output):
+    """Returns the current observation in full colour (RGB).
+
+    The returned observation is stored in 'output'.
+
+    Args:
+      output: Numpy array. Screen buffer to hold the returned observation.
+    
+    Returns:
+      observation: Numpy array. The current observation in RGB.
+    """
+    self.environment.ale.getScreenRGB(output)
     return output
 
   def _pool_and_resize(self):
@@ -513,3 +531,21 @@ class AtariPreprocessing(object):
                                    interpolation=cv2.INTER_AREA)
     int_image = np.asarray(transformed_image, dtype=np.uint8)
     return np.expand_dims(int_image, axis=2)
+  
+  def _color_average_and_resize(self):
+    """Averages over the color of two successive frames, and resizes the result.
+
+    Returns:
+      transformed_screen: Numpy array. Color-averaged, resized screen.
+    """
+    if self.frame_skip > 1:
+      self.screen_buffer[0] = np.mean(self.screen_buffer[0],
+                                      self.screen_buffer[1]).astype(np.uint8)
+    
+    # TODO(niels): Will this mess with the color order?
+    transformed_image = cv2.resize(self.screen_buffer[0],
+                                   (self.screen_size, self.screen_size),
+                                   interpolation=cv2.INTER_AREA)
+    int_image = np.asarray(transformed_image, dtype=np.uint8)
+    return int_image
+    
