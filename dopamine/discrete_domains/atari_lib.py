@@ -472,7 +472,7 @@ class AtariPreprocessing(object):
 
       if is_terminal:
         break
-      # We max-pool over the last two frames, now in RGB.
+      # We colour-average the last two frames.
       elif time_step >= self.frame_skip - 2:
         t = time_step - (self.frame_skip - 2)
         # self._fetch_grayscale_observation(self.screen_buffer[t])
@@ -548,4 +548,5 @@ class AtariPreprocessing(object):
                                    interpolation=cv2.INTER_AREA)
     int_image = np.asarray(transformed_image, dtype=np.uint8)
     return int_image
-    
+
+# TODO(niels): concatenate frames into one long channel dimension.

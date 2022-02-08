@@ -187,8 +187,8 @@ class DQNAgent(object):
 
     with tf.device(tf_device):
       # Create a placeholder for the state input to the DQN network.
-      # The last axis indicates the number of consecutive frames stacked.
-      state_shape = (1,) + self.observation_shape + (stack_size,)
+      # The last axis indicates the number of channels: a sequence of frames, each consisting of three color channels.
+      state_shape = (1,) + self.observation_shape[:2] + (stack_size * self.observation_shape[2],)
       self.state = np.zeros(state_shape)
       self.state_ph = tf.compat.v1.placeholder(
           self.observation_dtype, state_shape, name='state_ph')
@@ -249,9 +249,23 @@ class DQNAgent(object):
     # using a deep network, but may affect performance with a linear
     # approximation scheme.
     self._q_argmax = tf.argmax(self._net_outputs.q_values, axis=1)[0]
-    self._replay_net_outputs = self.online_convnet(self._replay.states)
+
+    # Concatenate last two dimensions of transitions batch: `stack_size` and `3` (RGB) become
+    # `stack_size * 3`. That is: RGB, RGB, ..., RGB (`stack_size` times, oldest frame first).
+    self._replay_net_outputs = self.online_convnet(
+      tf.transpose(
+        tf.reshape(
+          tf.transpose(self._replay.states),
+          (self._replay.states.shape[-2] * self._replay.states.shape[-1],) + self._replay.next_states.shape[:-2][::-1]
+        )
+      ))
     self._replay_next_target_net_outputs = self.target_convnet(
-        self._replay.next_states)
+      tf.transpose(
+        tf.reshape(
+          tf.transpose(self._replay.next_states),
+          (self._replay.next_states.shape[-2] * self._replay.next_states.shape[-1],) + self._replay.next_states.shape[:-2][::-1]
+        ),
+      ))
 
   def _build_replay_buffer(self, use_staging):
     """Creates the replay buffer used by the agent.
@@ -363,7 +377,7 @@ class DQNAgent(object):
     Returns:
       int, the selected action.
     """
-    self._last_observation = self._observation
+    self._last_observation = self._observation  # of shape `self.observation_shape`
     self._record_observation(observation)
 
     if not self.eval_mode:
@@ -448,8 +462,8 @@ class DQNAgent(object):
     # without frame stacking.
     self._observation = np.reshape(observation, self.observation_shape)
     # Swap out the oldest frame with the current frame.
-    self.state = np.roll(self.state, -1, axis=-1)
-    self.state[0, ..., -1] = self._observation
+    self.state = np.roll(self.state, -self.observation_shape[2], axis=-1)
+    self.state[0, ..., (-self.observation_shape[2]):] = self._observation
 
   def _store_transition(self, last_observation, action, reward, is_terminal):
     """Stores an experienced transition.
