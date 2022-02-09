@@ -53,7 +53,10 @@ import numpy as np
 import tensorflow as tf
 
 
-NATURE_DQN_OBSERVATION_SHAPE = (84, 84, 3)  # Size of downscaled Atari 2600 frame.
+DQN_USE_COLOR = False  # whether to use three color channels or just one grayscale channel
+
+NATURE_DQN_OBSERVATION_SHAPE = \
+  (84, 84, 3 if DQN_USE_COLOR else 1)  # Size of downscaled Atari 2600 frame.
 NATURE_DQN_DTYPE = tf.uint8  # DType of Atari 2600 observations.
 NATURE_DQN_STACK_SIZE = 4  # Number of frames in the state stack.
 
@@ -62,7 +65,6 @@ RainbowNetworkType = collections.namedtuple(
     'c51_network', ['q_values', 'logits', 'probabilities'])
 ImplicitQuantileNetworkType = collections.namedtuple(
     'iqn_network', ['quantile_values', 'quantiles'])
-
 
 
 
@@ -370,11 +372,11 @@ class AtariPreprocessing(object):
     self.screen_size = screen_size
 
     obs_dims = self.environment.observation_space
-    # Stores temporary observations used for pooling over two successive
+    # Stores temporary observations used for aggregating over two successive
     # frames.
     self.screen_buffer = [
-        np.empty(obs_dims.shape, dtype=np.uint8),
-        np.empty(obs_dims.shape, dtype=np.uint8)
+        np.empty(obs_dims.shape[:2] + (NATURE_DQN_OBSERVATION_SHAPE[2],), dtype=np.uint8),
+        np.empty(obs_dims.shape[:2] + (NATURE_DQN_OBSERVATION_SHAPE[2],), dtype=np.uint8)
     ]
 
     self.game_over = False
@@ -384,7 +386,7 @@ class AtariPreprocessing(object):
   def observation_space(self):
     # Return the observation space adjusted to match the shape of the processed
     # observations.
-    return Box(low=0, high=255, shape=(self.screen_size, self.screen_size, 3),
+    return Box(low=0, high=255, shape=(self.screen_size, self.screen_size, NATURE_DQN_OBSERVATION_SHAPE[2]),
                dtype=np.uint8)
 
   @property
@@ -411,11 +413,14 @@ class AtariPreprocessing(object):
     """
     self.environment.reset()
     self.lives = self.environment.ale.lives()
-    # self._fetch_grayscale_observation(self.screen_buffer[0])
-    self._fetch_rgb_observation(self.screen_buffer[0])
+    
+    if DQN_USE_COLOR:
+      self._fetch_rgb_observation(self.screen_buffer[0])
+    else:
+      self._fetch_grayscale_observation(self.screen_buffer[0])
+
     self.screen_buffer[1].fill(0)
-    # return self._pool_and_resize()
-    return self._color_average_and_resize()
+    return self._color_average_and_resize() if DQN_USE_COLOR else self._pool_and_resize()
 
   def render(self, mode):
     """Renders the current screen, before preprocessing.
@@ -459,7 +464,7 @@ class AtariPreprocessing(object):
 
     for time_step in range(self.frame_skip):
       # We bypass the Gym observation altogether and directly fetch the
-      # grayscale image from the ALE. This is a little faster.
+      # image (grayscale or colour) from the ALE. This is a little faster.
       _, reward, game_over, info = self.environment.step(action)
       accumulated_reward += reward
 
@@ -472,15 +477,19 @@ class AtariPreprocessing(object):
 
       if is_terminal:
         break
-      # We colour-average the last two frames.
+      # We aggregate over the last two frames.
       elif time_step >= self.frame_skip - 2:
         t = time_step - (self.frame_skip - 2)
-        # self._fetch_grayscale_observation(self.screen_buffer[t])
-        self._fetch_rgb_observation(self.screen_buffer[t])
+        if DQN_USE_COLOR:
+          self._fetch_rgb_observation(self.screen_buffer[t])
+        else:
+          self._fetch_grayscale_observation(self.screen_buffer[t])
 
-    # Color-average over the last two observations.
-    # observation = self._pool_and_resize()
-    observation = self._color_average_and_resize()
+    # Aggregate over the last two observations (frames)
+    if DQN_USE_COLOR:
+      observation = self._color_average_and_resize()
+    else:
+      observation = self._pool_and_resize()
 
     self.game_over = game_over
     return observation, accumulated_reward, is_terminal, info
@@ -496,7 +505,7 @@ class AtariPreprocessing(object):
     Returns:
       observation: numpy array, the current observation in grayscale.
     """
-    self.environment.ale.getScreenGrayscale(output)
+    self.environment.ale.getScreenGrayscale(output[:, :, 0])
     return output
 
   def _fetch_rgb_observation(self, output):
@@ -529,6 +538,7 @@ class AtariPreprocessing(object):
     transformed_image = cv2.resize(self.screen_buffer[0],
                                    (self.screen_size, self.screen_size),
                                    interpolation=cv2.INTER_AREA)
+    # after CV2 transform, the single depth dimension is omitted, so re-add it using `expand_dims`
     int_image = np.asarray(transformed_image, dtype=np.uint8)
     return np.expand_dims(int_image, axis=2)
   
@@ -542,11 +552,8 @@ class AtariPreprocessing(object):
       self.screen_buffer[0] = \
         np.mean([self.screen_buffer[0], self.screen_buffer[1]], axis=0).astype(np.uint8)
     
-    # TODO(niels): Will this mess with the color order?
     transformed_image = cv2.resize(self.screen_buffer[0],
                                    (self.screen_size, self.screen_size),
                                    interpolation=cv2.INTER_AREA)
     int_image = np.asarray(transformed_image, dtype=np.uint8)
     return int_image
-
-# TODO(niels): concatenate frames into one long channel dimension.
