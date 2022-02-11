@@ -53,11 +53,9 @@ import numpy as np
 import tensorflow as tf
 
 from typing import Dict, Tuple, Optional
-from numpy.typing import ArrayLike
 import os
 import re
 from PIL import Image
-import matplotlib.pyplot as plt
 
 
 # whether to use three color channels or just one grayscale channel
@@ -150,7 +148,7 @@ def maybe_transform_variable_names(variables, legacy_checkpoint_load=False):
   return name_map
 
 
-def atari_objects_map(game_name: str) -> Optional[Dict[str, Tuple[ArrayLike, float]]]:
+def atari_objects_map(game_name: str) -> Optional[Dict[str, Tuple[np.ndarray, float]]]:
   """Returns a mapping from objects to template-threshold pairs.
 
   Args:
@@ -158,7 +156,7 @@ def atari_objects_map(game_name: str) -> Optional[Dict[str, Tuple[ArrayLike, flo
   Returns:
     Possibly a mapping.
   """
-  out: Optional[Dict[str, Tuple[ArrayLike, float]]] = None
+  out: Optional[Dict[str, Tuple[np.ndarray, float]]] = None
   li: Optional[Tuple[Tuple[str, float]]] = None
   if game_name == 'Pong':
     li = (
@@ -554,7 +552,7 @@ class AtariPreprocessing(object):
 
   def _fetch_objects_observation(
       self,
-      obs: ArrayLike) -> Optional[ArrayLike]:
+      obs: np.ndarray) -> Optional[np.ndarray]:
     """Returns `DQN_NUM_OBJ` object layers, if `DQN_USE_OBJECTS` is `True`.
 
     The returned observation is stored in `obj_obs`. (So, NumPy arrays are
