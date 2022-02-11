@@ -579,7 +579,8 @@ class AtariPreprocessing(object):
       cc = cv2.matchTemplate(obs[..., :prev_axes], tmpl, cv2.TM_CCOEFF_NORMED)
       locs = np.where(cc > thr)
       for y, x in zip(*locs):
-        obs[y:(y + tmpl.shape), x:(x + tmpl.shape[1]), prev_axes + index] = 1
+        # for maximal contrast, we set 'on' pixels to the maximal UInt8 value
+        obs[y:(y + tmpl.shape[0]), x:(x + tmpl.shape[1]), prev_axes + index] = 255
     return obs
 
   def _fetch_grayscale_observation(self, output):
@@ -593,7 +594,7 @@ class AtariPreprocessing(object):
     Returns:
       observation: numpy array, the current observation in grayscale.
     """
-    self.environment.ale.getScreenGrayscale(output[:, :, 0])
+    output[:, :, 0] = self.environment.ale.getScreenGrayscale()
     return self._fetch_objects_observation(output) if DQN_USE_OBJECTS else output
 
   def _fetch_rgb_observation(self, output):
@@ -607,8 +608,39 @@ class AtariPreprocessing(object):
     Returns:
       observation: Numpy array. The current observation in RGB.
     """
-    self.environment.ale.getScreenRGB(output[:, :, :3])
+    output[:, :, :3] = self.environment.ale.getScreenRGB()
     return self._fetch_objects_observation(output) if DQN_USE_OBJECTS else output
+
+  def _transform_observation(self, screen, objs=None):
+    """Transforms the observation to the size of the screen.
+    
+    Args:
+      screen: The raw screen footage. RGB or grayscale.
+      objs: `None` or a rank 3 tensor. The channels store objects.
+    
+    Returns:
+      The transformed observation, with screen and object channels joined.
+    """
+    prev_axes = 3 if DQN_USE_COLOR else 1
+    screen_resz = cv2.resize(
+      screen[..., :prev_axes],
+      (self.screen_size, self.screen_size),
+      cv2.INTER_AREA)
+    # after CV2 transform, the single depth dimension is omitted
+    # if we use grayscale, so re-add it using `expand_dims`
+    if not DQN_USE_COLOR:
+      screen_resz = np.expand_dims(screen_resz, axis=2)
+    if not DQN_USE_OBJECTS:
+      return screen_resz
+    objs_resz = np.zeros((self.screen_size, self.screen_size, DQN_NUM_OBJ))
+    for index in range(DQN_NUM_OBJ):
+      # No enclosing square braces around `index`: `resize` for 1 channel
+      # yields 2D image (not a 3D one).
+      objs_resz[..., index] = cv2.resize(
+        objs[..., [index]],
+        (self.screen_size, self.screen_size),
+        cv2.INTER_AREA)
+    return np.concatenate((screen_resz, objs_resz), axis=2)
 
   def _pool_and_resize(self):
     """Transforms two frames into a Nature DQN observation.
@@ -633,18 +665,13 @@ class AtariPreprocessing(object):
         np.maximum(obj_channels_0, obj_channels_1, out=obj_channels_0)
       # resizing happens per-channel, so we can jointly resize
       # the RGB (or grayscale) channel(s) along with the object channels
-      transformed_screen = cv2.resize(np.concatenate((screen_0, obj_channels_0), axis=2),
-                                      (self.screen_size, self.screen_size),
-                                      interpolation=cv2.INTER_AREA)
+      transformed_screen = self._transform_observation(screen_0, obj_channels_0)
       int_screen = np.asarray(transformed_screen, dtype=np.uint8)
       return int_screen
     else:
-      # after CV2 transform, the single depth dimension is omitted, so re-add it using `expand_dims`
-      transformed_screen = cv2.resize(screen_0,
-                                      (self.screen_size, self.screen_size),
-                                      interpolation=cv2.INTER_AREA)
+      transformed_screen = self._transform_observation(screen_0)
       int_screen = np.asarray(transformed_screen, dtype=np.uint8)
-      return np.expand_dims(int_screen, axis=2)
+      return int_screen
   
   def _color_average_and_resize(self):
     """Averages over the color of two successive frames, and resizes the result.
@@ -666,15 +693,10 @@ class AtariPreprocessing(object):
         np.maximum(obj_channels_0, obj_channels_1, out=obj_channels_0)
       # resizing happens per-channel, so we can jointly resize
       # the RGB (or grayscale) channel(s) along with the object channels
-      transformed_screen = cv2.resize(np.concatenate((screen_0, obj_channels_0), axis=2),
-                                      (self.screen_size, self.screen_size),
-                                      interpolation=cv2.INTER_AREA)
+      transformed_screen = self._transform_observation(screen_0, obj_channels_0)
       int_screen = np.asarray(transformed_screen, dtype=np.uint8)
       return int_screen
     else:
-      # after CV2 transform, the single depth dimension is omitted, so re-add it using `expand_dims`
-      transformed_screen = cv2.resize(screen_0,
-                                      (self.screen_size, self.screen_size),
-                                      interpolation=cv2.INTER_AREA)
+      transformed_screen = self._transform_observation(screen_0)
       int_screen = np.asarray(transformed_screen, dtype=np.uint8)
-      return np.expand_dims(int_screen, axis=2)
+      return int_screen
