@@ -64,7 +64,7 @@ DQN_USE_COLOR = False
 DQN_USE_OBJECTS = True
 # the location on disk of the object images
 if re.search('(s3366235)', os.environ['HOME']):
-  DQN_OBJECTS_LOC = os.path.join('data', 's3366235', 'master-thesis', 'objects')
+  DQN_OBJECTS_LOC = os.path.join('/', 'data', 's3366235', 'master-thesis', 'objects')
 else:
   DQN_OBJECTS_LOC = os.path.join(os.environ['HOME'], 'Documents', 'test', 'objects')
 # The number of object channels to use, *if* we use objects. Should minimally
