@@ -52,11 +52,29 @@ from gym.spaces.box import Box
 import numpy as np
 import tensorflow as tf
 
+from typing import Dict, Tuple, Optional
+from numpy.typing import ArrayLike
+import os
+import re
+from PIL import Image
+import matplotlib.pyplot as plt
 
-DQN_USE_COLOR = False  # whether to use three color channels or just one grayscale channel
+
+# whether to use three color channels or just one grayscale channel
+DQN_USE_COLOR = False
+# Whether to introduce object channels. Number of channels may vary per game.
+DQN_USE_OBJECTS = True
+# the location on disk of the object images
+if re.search('(s3366235)', os.environ['HOME']):
+  DQN_OBJECTS_LOC = os.path.join('data', 's3366235', 'master-thesis', 'objects')
+else:
+  DQN_OBJECTS_LOC = os.path.join(os.environ['HOME'], 'Documents', 'test', 'objects')
+# The number of object channels to use, *if* we use objects. Should minimally
+# be the number of objects for your game.
+DQN_NUM_OBJ = 2
 
 NATURE_DQN_OBSERVATION_SHAPE = \
-  (84, 84, 3 if DQN_USE_COLOR else 1)  # Size of downscaled Atari 2600 frame.
+  (84, 84, (3 if DQN_USE_COLOR else 1) + (DQN_NUM_OBJ if DQN_USE_OBJECTS else 0))
 NATURE_DQN_DTYPE = tf.uint8  # DType of Atari 2600 observations.
 NATURE_DQN_STACK_SIZE = 4  # Number of frames in the state stack.
 
@@ -101,7 +119,7 @@ def create_atari_environment(game_name=None, sticky_actions=True):
   # (30 minutes). The TimeLimit wrapper also plays poorly with saving and
   # restoring states.
   env = env.env
-  env = AtariPreprocessing(env)
+  env = AtariPreprocessing(env, objects=atari_objects_map(game_name))
   return env
 
 
@@ -130,6 +148,42 @@ def maybe_transform_variable_names(variables, legacy_checkpoint_load=False):
   else:
     name_map = None
   return name_map
+
+
+def atari_objects_map(game_name: str) -> Optional[Dict[str, Tuple[ArrayLike, float]]]:
+  """Returns a mapping from objects to template-threshold pairs.
+
+  Args:
+    game_name: The name of the game. Example: `'Pong'`.
+  Returns:
+    Possibly a mapping.
+  """
+  out: Optional[Dict[str, Tuple[ArrayLike, float]]] = None
+  li: Optional[Tuple[Tuple[str, float]]] = None
+  if game_name == 'Pong':
+    li = (
+      ('green-paddle', 0.89),
+      ('ball', 0.89))
+  elif game_name == 'FishingDerby':
+    li = (
+      ('tackle', 0.8),
+      ('fish', 0.6),
+      ('shark', 0.6))
+  elif game_name == 'MsPacman':
+    li = (
+      ('ms-pacman', 0.6),
+      ('ghost', 0.65),
+      ('pellet', 0.9),
+      ('power-pellet', 0.9))
+  if li is not None:
+    out = {}
+    pth = os.path.join(DQN_OBJECTS_LOC, game_name)
+    for name, thr in li:
+      obj_pth = '%s-padded.png' % (name,)
+      tmpl = Image.open(os.path.join(pth, obj_pth))
+      tmpl = np.array(tmpl if DQN_USE_COLOR else tmpl.convert('L'))
+      out[name] = (tmpl, thr)
+  return out
 
 
 class NatureDQNNetwork(tf.keras.Model):
@@ -328,7 +382,7 @@ class ImplicitQuantileNetwork(tf.keras.Model):
     return ImplicitQuantileNetworkType(quantile_values, quantiles)
 
 
-@gin.configurable
+@gin.configurable(denylist=['objects'])
 class AtariPreprocessing(object):
   """A class implementing image preprocessing for Atari 2600 agents.
 
@@ -346,7 +400,7 @@ class AtariPreprocessing(object):
   """
 
   def __init__(self, environment, frame_skip=4, terminal_on_life_loss=False,
-               screen_size=84):
+               screen_size=84, objects=None):
     """Constructor for an Atari 2600 preprocessor.
 
     Args:
@@ -355,6 +409,8 @@ class AtariPreprocessing(object):
       terminal_on_life_loss: bool, If True, the step() method returns
         is_terminal=True whenever a life is lost. See Mnih et al. 2015.
       screen_size: int, size of a resized Atari 2600 frame.
+      objects: dict or None, the mapping from game objects to their templates
+        and thresholds, if such a mapping exists for the game.
 
     Raises:
       ValueError: if frame_skip or screen_size are not strictly positive.
@@ -381,6 +437,8 @@ class AtariPreprocessing(object):
 
     self.game_over = False
     self.lives = 0  # Will need to be set by reset().
+
+    self.objects = objects
 
   @property
   def observation_space(self):
@@ -494,6 +552,36 @@ class AtariPreprocessing(object):
     self.game_over = game_over
     return observation, accumulated_reward, is_terminal, info
 
+  def _fetch_objects_observation(
+      self,
+      obs: ArrayLike) -> Optional[ArrayLike]:
+    """Returns `DQN_NUM_OBJ` object layers, if `DQN_USE_OBJECTS` is `True`.
+
+    The returned observation is stored in `obj_obs`. (So, NumPy arrays are
+    'pass by reference'.)
+
+    Args:
+      obs: The 'normal' game observation from which to derive object layers.
+    
+    Returns:
+      out: The observation layers, or `None` if `DQN_USE_OBJECTS` was
+      set to `False`.
+    """
+    if not DQN_USE_OBJECTS:
+      return None  # if we get here, the caller (me) likely made a mistake
+    keys = list(self.objects.keys())
+    # the axes for the RGB or grayscale screen
+    prev_axes = 3 if DQN_USE_COLOR else 1
+    obs[..., prev_axes:].fill(0)  # Remove all previous contents. Use pass-by-reference.
+    for index in range(DQN_NUM_OBJ):
+      # fill per object the channel depending on the contents of `obs`
+      tmpl, thr = self.objects[keys[index]]
+      cc = cv2.matchTemplate(obs[..., :prev_axes], tmpl, cv2.TM_CCOEFF_NORMED)
+      locs = np.where(cc > thr)
+      for y, x in zip(*locs):
+        obs[y:(y + tmpl.shape), x:(x + tmpl.shape[1]), prev_axes + index] = 1
+    return obs
+
   def _fetch_grayscale_observation(self, output):
     """Returns the current observation in grayscale.
 
@@ -506,7 +594,7 @@ class AtariPreprocessing(object):
       observation: numpy array, the current observation in grayscale.
     """
     self.environment.ale.getScreenGrayscale(output[:, :, 0])
-    return output
+    return self._fetch_objects_observation(output) if DQN_USE_OBJECTS else output
 
   def _fetch_rgb_observation(self, output):
     """Returns the current observation in full colour (RGB).
@@ -519,8 +607,8 @@ class AtariPreprocessing(object):
     Returns:
       observation: Numpy array. The current observation in RGB.
     """
-    self.environment.ale.getScreenRGB(output)
-    return output
+    self.environment.ale.getScreenRGB(output[:, :, :3])
+    return self._fetch_objects_observation(output) if DQN_USE_OBJECTS else output
 
   def _pool_and_resize(self):
     """Transforms two frames into a Nature DQN observation.
@@ -530,17 +618,33 @@ class AtariPreprocessing(object):
     Returns:
       transformed_screen: numpy array, pooled, resized screen.
     """
+    prev_axes = 3 if DQN_USE_COLOR else 1
+    screen_0 = self.screen_buffer[0][..., :prev_axes]
+    screen_1 = self.screen_buffer[1][..., :prev_axes]
+
     # Pool if there are enough screens to do so.
     if self.frame_skip > 1:
-      np.maximum(self.screen_buffer[0], self.screen_buffer[1],
-                 out=self.screen_buffer[0])
-
-    transformed_image = cv2.resize(self.screen_buffer[0],
-                                   (self.screen_size, self.screen_size),
-                                   interpolation=cv2.INTER_AREA)
-    # after CV2 transform, the single depth dimension is omitted, so re-add it using `expand_dims`
-    int_image = np.asarray(transformed_image, dtype=np.uint8)
-    return np.expand_dims(int_image, axis=2)
+      np.maximum(screen_0, screen_1, out=screen_0)
+    
+    if DQN_USE_OBJECTS:
+      obj_channels_0 = self.screen_buffer[0][..., prev_axes:]
+      obj_channels_1 = self.screen_buffer[1][..., prev_axes:]
+      if self.frame_skip > 1:
+        np.maximum(obj_channels_0, obj_channels_1, out=obj_channels_0)
+      # resizing happens per-channel, so we can jointly resize
+      # the RGB (or grayscale) channel(s) along with the object channels
+      transformed_screen = cv2.resize(np.concatenate((screen_0, obj_channels_0), axis=2),
+                                      (self.screen_size, self.screen_size),
+                                      interpolation=cv2.INTER_AREA)
+      int_screen = np.asarray(transformed_screen, dtype=np.uint8)
+      return int_screen
+    else:
+      # after CV2 transform, the single depth dimension is omitted, so re-add it using `expand_dims`
+      transformed_screen = cv2.resize(screen_0,
+                                      (self.screen_size, self.screen_size),
+                                      interpolation=cv2.INTER_AREA)
+      int_screen = np.asarray(transformed_screen, dtype=np.uint8)
+      return np.expand_dims(int_screen, axis=2)
   
   def _color_average_and_resize(self):
     """Averages over the color of two successive frames, and resizes the result.
@@ -548,12 +652,29 @@ class AtariPreprocessing(object):
     Returns:
       transformed_screen: Numpy array. Color-averaged, resized screen.
     """
+    prev_axes = 3 if DQN_USE_COLOR else 1
+    screen_0 = self.screen_buffer[0][..., :prev_axes]
+    screen_1 = self.screen_buffer[1][..., :prev_axes]
+
     if self.frame_skip > 1:
-      self.screen_buffer[0] = \
-        np.mean([self.screen_buffer[0], self.screen_buffer[1]], axis=0).astype(np.uint8)
+      screen_0 = np.mean([screen_0, screen_1], axis=0).astype(np.uint8)
     
-    transformed_image = cv2.resize(self.screen_buffer[0],
-                                   (self.screen_size, self.screen_size),
-                                   interpolation=cv2.INTER_AREA)
-    int_image = np.asarray(transformed_image, dtype=np.uint8)
-    return int_image
+    if DQN_USE_OBJECTS:
+      obj_channels_0 = self.screen_buffer[0][..., prev_axes:]
+      obj_channels_1 = self.screen_buffer[1][..., prev_axes:]
+      if self.frame_skip > 1:
+        np.maximum(obj_channels_0, obj_channels_1, out=obj_channels_0)
+      # resizing happens per-channel, so we can jointly resize
+      # the RGB (or grayscale) channel(s) along with the object channels
+      transformed_screen = cv2.resize(np.concatenate((screen_0, obj_channels_0), axis=2),
+                                      (self.screen_size, self.screen_size),
+                                      interpolation=cv2.INTER_AREA)
+      int_screen = np.asarray(transformed_screen, dtype=np.uint8)
+      return int_screen
+    else:
+      # after CV2 transform, the single depth dimension is omitted, so re-add it using `expand_dims`
+      transformed_screen = cv2.resize(screen_0,
+                                      (self.screen_size, self.screen_size),
+                                      interpolation=cv2.INTER_AREA)
+      int_screen = np.asarray(transformed_screen, dtype=np.uint8)
+      return np.expand_dims(int_screen, axis=2)
