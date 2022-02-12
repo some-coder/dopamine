@@ -406,7 +406,7 @@ class DQNAgent(object):
     otherwise acts greedily according to the current Q-value estimates.
 
     Returns:
-       int, the selected action.
+      int, the selected action.
     """
     if self.eval_mode:
       epsilon = self.epsilon_eval
@@ -422,6 +422,17 @@ class DQNAgent(object):
     else:
       # Choose the action with highest Q-value at the current state.
       return self._sess.run(self._q_argmax, {self.state_ph: self.state})
+
+  def action_valuations(self, state):
+    """Returns, for each action, its valuation by the online network.
+
+    Args:
+      The state to evaluate actions for. Must be of dimension
+      `(1, obs_shape[0], obs_shape[1], stack_size * obs_shape[2])`.
+    Returns:
+      A NumPy array of dimension `number_actions`.
+    """
+    return self._sess.run(self._net_outputs.q_values, {self.state_ph: state})
 
   def _train_step(self):
     """Runs a single training step.

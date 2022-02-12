@@ -24,6 +24,9 @@ from absl import logging
 from dopamine.discrete_domains import run_experiment
 import tensorflow as tf
 
+import matplotlib.pyplot as plt
+import numpy as np
+
 
 flags.DEFINE_string('base_dir', None,
                     'Base directory to host all required sub-directories.')
@@ -56,7 +59,29 @@ def main(unused_argv):
   gin_bindings = FLAGS.gin_bindings
   run_experiment.load_gin_configs(gin_files, gin_bindings)
   runner = run_experiment.create_runner(base_dir)
-  runner.run_experiment()
+
+  INSPECT_ACTION_VALUATIONS = True
+
+  if INSPECT_ACTION_VALUATIONS:
+    obs = runner.observations_sequence([2, 5] * 15)
+
+    plt.imshow(obs[-1][0][..., :1], cmap='binary')
+    plt.show(block=True)
+    plt.imshow(obs[-1][0][..., 1], cmap='binary')
+    plt.show(block=True)
+    plt.imshow(obs[-1][0][..., 2], cmap='binary')
+    plt.show(block=True)
+
+    last_four = np.concatenate((
+      obs[-1][0],
+      obs[-2][0],
+      obs[-3][0],
+      obs[-4][0]
+    ), axis=-1)[np.newaxis, ...]
+    evals = runner.state_action_evaluations(last_four)
+    print(evals)
+  else:
+    runner.run_experiment()
 
 
 if __name__ == '__main__':

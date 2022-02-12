@@ -529,6 +529,16 @@ class Runner(object):
       self._log_experiment(iteration, statistics)
       self._checkpoint_experiment(iteration)
     self._summary_writer.flush()
+  
+  def state_action_evaluations(self, state):
+    tup = self._environment.environment.ale.getLegalActionSet()
+    return {tup[idx]: val for idx, val in enumerate(self._agent.action_valuations(state)[0])}
+
+  def observations_sequence(self, actions):
+    obs = []
+    for a in actions:
+      obs.append(self._environment.step(a))
+    return obs
 
 
 @gin.configurable
