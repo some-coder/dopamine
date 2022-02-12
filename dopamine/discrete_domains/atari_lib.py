@@ -69,7 +69,7 @@ else:
   DQN_OBJECTS_LOC = os.path.join(os.environ['HOME'], 'Documents', 'test', 'objects')
 # The number of object channels to use, *if* we use objects. Should minimally
 # be the number of objects for your game.
-DQN_NUM_OBJ = 2
+DQN_NUM_OBJ = 4
 
 NATURE_DQN_OBSERVATION_SHAPE = \
   (84, 84, (3 if DQN_USE_COLOR else 1) + (DQN_NUM_OBJ if DQN_USE_OBJECTS else 0))
@@ -170,7 +170,7 @@ def atari_objects_map(game_name: str) -> Optional[Dict[str, Tuple[np.ndarray, fl
   elif game_name == 'MsPacman':
     li = (
       ('ms-pacman', 0.6),
-      ('ghost', 0.65),
+      ('clyde-yellow', 0.65),
       ('pellet', 0.9),
       ('power-pellet', 0.9))
   if li is not None:
