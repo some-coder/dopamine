@@ -52,7 +52,7 @@ from gym.spaces.box import Box
 import numpy as np
 import tensorflow as tf
 
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Union
 import os
 import re
 from PIL import Image
@@ -69,7 +69,7 @@ else:
   DQN_OBJECTS_LOC = os.path.join(os.environ['HOME'], 'Documents', 'test', 'objects')
 # The number of object channels to use, *if* we use objects. Should minimally
 # be the number of objects for your game.
-DQN_NUM_OBJ = 4
+DQN_NUM_OBJ = 2
 
 NATURE_DQN_OBSERVATION_SHAPE = \
   (84, 84, (3 if DQN_USE_COLOR else 1) + (DQN_NUM_OBJ if DQN_USE_OBJECTS else 0))
@@ -109,6 +109,7 @@ def create_atari_environment(game_name=None, sticky_actions=True):
     An Atari 2600 environment with some standard preprocessing.
   """
   assert game_name is not None
+  atari_check_num_objects(game_name)
   game_version = 'v0' if sticky_actions else 'v4'
   full_game_name = '{}NoFrameskip-{}'.format(game_name, game_version)
   env = gym.make(full_game_name)
@@ -117,7 +118,10 @@ def create_atari_environment(game_name=None, sticky_actions=True):
   # (30 minutes). The TimeLimit wrapper also plays poorly with saving and
   # restoring states.
   env = env.env
-  env = AtariPreprocessing(env, objects=atari_objects_map(game_name))
+  env = AtariPreprocessing(
+    env,
+    objects=atari_objects_map(game_name),
+    bg_color=atari_background_color(game_name))
   return env
 
 
@@ -182,6 +186,56 @@ def atari_objects_map(game_name: str) -> Optional[Dict[str, Tuple[np.ndarray, fl
       tmpl = np.array(tmpl if DQN_USE_COLOR else tmpl.convert('L'))
       out[name] = (tmpl, thr)
   return out
+
+
+def atari_background_color(game_name: str) -> \
+    Union[Tuple[np.uint8], Tuple[np.uint8, np.uint8, np.uint8]]:
+  """Yields the background color for the specified Atari game.
+
+  Args:
+    game_name: The name of the Atari 2600 game to get the background
+      color of.
+  Returns:
+    col: The background color. If `DQN_USE_COLOR` is `True`, then
+      it yields a triple of RGB `uint8`s. If it's `False`, it will
+      yield a single value: the grayscale background 'color'.
+  """
+  if game_name == 'Pong':
+    if DQN_USE_COLOR:
+      return (np.uint8(144), np.uint8(72), np.uint8(17))
+    else:
+      return (np.uint8(87),)
+  elif game_name == 'FishingDerby':
+    if DQN_USE_COLOR:
+      return (np.uint8(24), np.uint8(26), np.uint8(167))
+    else:
+      return (np.uint8(41),)
+  elif game_name == 'MsPacman':
+    if DQN_USE_COLOR:
+      return (np.uint8(0), np.uint8(28), np.uint8(136))
+    else:
+      return (np.uint8(32),)
+  else:
+    raise ValueError('Game \'%s\' has no background color info.' % (game_name))
+
+
+def atari_check_num_objects(game_name: str) -> None:
+  """Checks whether `DQN_NUM_OBJ` has the right number of objects for the game.
+
+  Args:
+    game_name: The name of the Atari 2600 game to check the number of objects
+      for.
+  """
+  if game_name == 'Pong' and DQN_NUM_OBJ == 2:
+    return
+  elif game_name == 'FishingDerby' and DQN_NUM_OBJ == 3:
+    return
+  elif game_name == 'MsPacman' and DQN_NUM_OBJ == 4:
+    return
+  else:
+    raise ValueError(
+      'Game \'%s\' doesn\'t have %d objects!' %
+      (game_name, DQN_NUM_OBJ))
 
 
 class NatureDQNNetwork(tf.keras.Model):
@@ -398,7 +452,7 @@ class AtariPreprocessing(object):
   """
 
   def __init__(self, environment, frame_skip=4, terminal_on_life_loss=False,
-               screen_size=84, objects=None):
+               screen_size=84, objects=None, bg_color=None):
     """Constructor for an Atari 2600 preprocessor.
 
     Args:
@@ -409,6 +463,8 @@ class AtariPreprocessing(object):
       screen_size: int, size of a resized Atari 2600 frame.
       objects: dict or None, the mapping from game objects to their templates
         and thresholds, if such a mapping exists for the game.
+      bg_color: `Union[Tuple[np.uint8], Tuple[np.uint8, np.uint8, np.uint8]]`
+        or `None`. The background color of the game.
 
     Raises:
       ValueError: if frame_skip or screen_size are not strictly positive.
@@ -437,6 +493,7 @@ class AtariPreprocessing(object):
     self.lives = 0  # Will need to be set by reset().
 
     self.objects = objects
+    self.bg_color = bg_color
 
   @property
   def observation_space(self):

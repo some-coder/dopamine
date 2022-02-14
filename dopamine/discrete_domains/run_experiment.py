@@ -42,6 +42,14 @@ import tensorflow as tf
 
 import gin.tf
 
+import cv2
+from collections import namedtuple
+from dopamine.discrete_domains.atari_lib import DQN_USE_COLOR, DQN_NUM_OBJ
+import matplotlib.pyplot as plt
+
+
+Difference = namedtuple('Difference', ['dy', 'dx', 'show'])
+
 
 def load_gin_configs(gin_files, gin_bindings):
   """Loads gin configuration files.
@@ -531,14 +539,90 @@ class Runner(object):
     self._summary_writer.flush()
   
   def state_action_evaluations(self, state):
+    """Evaluates the supplied state per action that can be taken.
+
+    Args:
+      state: The state. A `(1, obs_dim.shape[:2], stack_size * (3 if DQN_USE_COLOR else 1))`.
+    Returns:
+      evals: The action evaluations for the state.
+    """
     tup = self._environment.environment.ale.getLegalActionSet()
     return {tup[idx]: val for idx, val in enumerate(self._agent.action_valuations(state)[0])}
 
   def observations_sequence(self, actions):
+    """Yields a sequence of observations based on the chosen actions.
+
+    Args:
+      actions: An action sequence. The observation sequence
+        is based on the action sequence.
+    Returns:
+      obs: The observation sequence.
+    """
     obs = []
     for a in actions:
       obs.append(self._environment.step(a))
     return obs
+
+  def manipulate_object(self, state, layer, diff, ids=None):
+    """Manipulates the observation by applying `diff` to the `layer`th layer.
+
+    Args:
+      state: The state to manipulate. Must consist of `stack_size` observations.
+        Each observation is manipulated identically. We assume that
+        observations are not `(observation, action, reward, is_terminal)`
+        quadruples; they are just `observation`s instead.
+      layer: The object layer to change. Should be `int`. Layers are indexed
+        starting from the first 'raw' game screen layer (RGB or grayscale).
+        This means that the first object layer in an RGB image should
+        be referred to via index `3` (for example).
+      diff: A `Difference` named tuple. Stores `y` and `x` offsets, as well
+        as a flag to indicate whether to show the object in the first place.
+      ids: Optional. A `Tuple[int, ...]` that indicates which objects
+        to manipulate. By default, it's set to `None`, meaning all
+        objects should be manipulated.
+    Returns:
+      A modified observation.
+    """
+    modif = np.zeros(state.shape, dtype=np.uint8)
+    modif[:] = state
+    prev_axes = 3 if DQN_USE_COLOR else 1
+    # copy the screen layer(s)
+    modif[0, ..., :prev_axes] = \
+      state[0, ..., :prev_axes]
+    frm_layers = prev_axes + DQN_NUM_OBJ
+    for obs_idx in range(state.shape[-1]):
+      if obs_idx % frm_layers != layer:
+        continue  # not the right layer
+      locs = cv2.findContours(
+        state[0, ..., obs_idx],
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE)
+      locs = [loc.squeeze() for loc in locs[0]]
+      locs = [loc[(0, 2), :] for loc in locs]  # upper-left, lower-right
+      if ids is not None:
+        # narrow the locations down to what was requested
+        locs = [loc for idx, loc in enumerate(locs) if idx in ids]
+      for loc in locs:
+        x_mn, x_mx, y_mn, y_mx = (loc[0][0], loc[1][0] + 1, loc[0][1], loc[1][1] + 1)
+        # get the old screen and object appearances
+        imt_screen = np.copy(modif[0, y_mn:y_mx, x_mn:x_mx, frm_layers * (obs_idx // frm_layers)])
+        imt_obj = np.copy(modif[0, y_mn:y_mx, x_mn:x_mx, obs_idx])
+        # clear the old screen and object
+        modif[0, y_mn:y_mx, x_mn:x_mx, frm_layers * (obs_idx // frm_layers)] = self._environment.bg_color
+        modif[0, y_mn:y_mx, x_mn:x_mx, obs_idx] = 0
+        # place the new screen and object
+        if diff.show:
+          modif[
+            0,
+            (y_mn + diff.dy):(y_mx + diff.dy),
+            (x_mn + diff.dx):(x_mx + diff.dx),
+            frm_layers * (obs_idx // frm_layers)] = imt_screen
+          modif[
+            0,
+            (y_mn + diff.dy):(y_mx + diff.dy),
+            (x_mn + diff.dx):(x_mx + diff.dx),
+            obs_idx] = imt_obj
+    return modif
 
 
 @gin.configurable
