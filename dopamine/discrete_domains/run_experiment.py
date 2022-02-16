@@ -45,7 +45,7 @@ import gin.tf
 import cv2
 from collections import namedtuple
 from dopamine.discrete_domains.atari_lib import DQN_USE_COLOR, DQN_NUM_OBJ
-import matplotlib.pyplot as plt
+from PIL import Image
 
 
 Difference = namedtuple('Difference', ['dy', 'dx', 'show'])
@@ -549,19 +549,34 @@ class Runner(object):
     tup = self._environment.environment.ale.getLegalActionSet()
     return {tup[idx]: val for idx, val in enumerate(self._agent.action_valuations(state)[0])}
 
-  def observations_sequence(self, actions):
+  def observations_sequence(self, save_location):
     """Yields a sequence of observations based on the chosen actions.
 
+    This method is interactive: it requires response from
+    the user at the command prompt.
+
     Args:
-      actions: An action sequence. The observation sequence
-        is based on the action sequence.
+      save_location: Location on disk where to save intermediate
+        game states to. Used for inspection.
     Returns:
       obs: The observation sequence.
     """
-    obs = []
-    for a in actions:
-      obs.append(self._environment.step(a))
-    return obs
+    obs_li = []
+    _ = self._environment.reset()
+    action = input('(Frame %3d): ' % (self._environment.environment.ale.getFrameNumber(),))
+    rep = 0  # number of repetitions
+    while action != '-':
+      action = int(action)  # convert into a `Discrete(6/9/18)` action
+      rep = int(input('(# action repeats) '))
+      for _ in range(rep):
+        obs, _, _, _ = self._environment.step(action)
+        if DQN_USE_COLOR:
+          Image.fromarray(obs[..., :3]).save(save_location + '/state.png')
+        else:
+          Image.fromarray(obs[..., 0], 'L').save(save_location + '/state.png')
+        obs_li.append(obs)
+      action = input('(Frame %3d): ' % (self._environment.environment.ale.getFrameNumber(),))
+    return obs_li
 
   def manipulate_object(self, state, layer, diff, ids=None):
     """Manipulates the observation by applying `diff` to the `layer`th layer.

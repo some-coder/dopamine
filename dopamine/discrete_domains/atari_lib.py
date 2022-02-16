@@ -736,7 +736,6 @@ class AtariPreprocessing(object):
       self._transform_observation(
         resz,
         self.screen_buffer[0][..., :prev_axes])
-      plt.show()
       return int_screen
   
   def _color_average_and_resize(self):

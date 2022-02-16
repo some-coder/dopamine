@@ -23,10 +23,7 @@ from absl import logging
 
 from dopamine.discrete_domains import run_experiment
 import tensorflow as tf
-
-import matplotlib.pyplot as plt
-import numpy as np
-from dopamine.discrete_domains.run_experiment import Difference
+import dopamine.discrete_domains.inspect_action_values as iav
 
 
 flags.DEFINE_string('base_dir', None,
@@ -42,7 +39,6 @@ flags.DEFINE_multi_string(
 
 
 FLAGS = flags.FLAGS
-    
 
 
 def main(unused_argv):
@@ -63,31 +59,8 @@ def main(unused_argv):
   INSPECT_ACTION_VALUATIONS = True
 
   if INSPECT_ACTION_VALUATIONS:
-    obs = runner.observations_sequence([2, 5] * 15)
-
-    last_four = np.concatenate((
-      obs[-1][0],
-      obs[-2][0],
-      obs[-3][0],
-      obs[-4][0]
-    ), axis=-1)[np.newaxis, ...]
-
-    obj_to_change = 1  # layer index `1`
-    manip = runner.manipulate_object(last_four, obj_to_change, Difference(-5, 0, True))
-    
-    plt.subplot(2, 2, 1)
-    plt.imshow(last_four[0, ..., :1], cmap='binary')
-    plt.subplot(2, 2, 2)
-    plt.imshow(manip[0, ..., :1], cmap='binary')
-    plt.subplot(2, 2, 3)
-    plt.imshow(last_four[0, ..., obj_to_change], cmap='binary')
-    plt.subplot(2, 2, 4)
-    plt.imshow(manip[0, ..., obj_to_change], cmap='binary')
-    plt.tight_layout()
-    plt.show(block=True)
-
-    # evals = runner.state_action_evaluations(last_four)
-    # print(evals)
+    name = input('(Name of saliency subdirectory?) ')
+    iav.inspect_action_valuations(runner, name)
   else:
     runner.run_experiment()
 
