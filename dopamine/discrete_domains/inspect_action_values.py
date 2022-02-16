@@ -51,6 +51,12 @@ def inspect_action_valuations(runner, name):
     )
     obs = load_observations_sequence_end(pth, '%s/manip-%d' % (name, manip_ctr))
     manip_ctr += 1
+  
+  while input('(Perform state-action evaluations? [y/n]) ') == 'y':
+    sub_dir = input('(Which subdirectory should be considered?) ')
+    obs = load_observations_sequence_end(pth, '%s/%s' % (name, sub_dir))
+    evals = runner.state_action_evaluations(obs)
+    print('\tEVALS: %s' % (str(evals),))
 
 
 def save_observations_sequence_end(obs, save_location, save_name):
