@@ -1,10 +1,21 @@
 import os
 import re
 from dopamine.discrete_domains.atari_lib import DQN_NUM_OBJ, DQN_USE_COLOR, DQN_USE_OBJECTS
-from dopamine.discrete_domains.run_experiment import Difference
 from PIL import Image
 import numpy as np
-import matplotlib.pyplot as plt
+from collections import namedtuple
+
+
+MS_PACMAN_PELLET_FILE = 'ms-pacman-pellet-locs.npy'
+SALIENCY_PATH = \
+    (
+      '/data/s3366235/master-thesis/'
+      if re.search('s3366235', os.environ['HOME']) else
+      '/home/niels/Documents/test/'
+    ) + 'saliency/'
+
+
+Difference = namedtuple('Difference', ['dx', 'dy', 'show'])
 
 
 def inspect_action_valuations(runner, name):
@@ -15,48 +26,115 @@ def inspect_action_valuations(runner, name):
     name: Name of the directory to which to save information
       from this inspection.
   """
-  pth = \
-    (
-      '/data/s3366235/master-thesis/'
-      if re.search('s3366235', os.environ['HOME']) else
-      '/home/niels/Documents/test/'
-    ) + 'saliency/'
   try:
-    os.makedirs(pth)
+    os.makedirs(SALIENCY_PATH)
   except FileExistsError:
-    print('Directory \'%s\' already exists. Skipping.' % (pth,)) 
+    print('Directory \'%s\' already exists. Skipping.' % (SALIENCY_PATH,)) 
   
   if input('(Create new observation sequence? [y/n]) ') == 'y':
-    obs = runner.observations_sequence(pth)
-    save_observations_sequence_end(obs, pth, '%s/original' % (name,))
+    obs = runner.observations_sequence(SALIENCY_PATH)
+    save_observations_sequence_end(obs, SALIENCY_PATH, '%s/original' % (name,))
 
-  print('(Loading from directory \'%s%s\'...)' % (pth, name + '/original'))
-  obs = load_observations_sequence_end(pth, '%s/original' % (name,))
+  print('(Loading from directory \'%s%s\'...)' % (SALIENCY_PATH, name + '/original'))
+  obs = load_observations_sequence_end(SALIENCY_PATH, '%s/original' % (name,))
   
-  all_axes = \
-    (3 if DQN_USE_COLOR else 1) + (DQN_NUM_OBJ if DQN_USE_OBJECTS else 0)
-  manip_ctr = 0
-  while input('(Perform manipulation %d? [y/n]) ' % (manip_ctr,)) == 'y':
-    obj_idx, all_locs, diff = get_manipulation()
-
-    manip_obs = \
-      manipulate_object(runner, obs, obj_idx, diff, all_locs)
-    save_observations_sequence_end(
-      [
-        manip_obs[0, ..., (all_axes * frame):(all_axes * (frame + 1))]
-        for frame in range(4)
-      ],
-      pth,
-      '%s/manip-%d' % (name, manip_ctr)
-    )
-    obs = load_observations_sequence_end(pth, '%s/manip-%d' % (name, manip_ctr))
-    manip_ctr += 1
+  obs = interactively_manipulate_observation(runner, SALIENCY_PATH, name, obs)
   
   while input('(Perform state-action evaluations? [y/n]) ') == 'y':
     sub_dir = input('(Which subdirectory should be considered?) ')
-    obs = load_observations_sequence_end(pth, '%s/%s' % (name, sub_dir))
+    obs = load_observations_sequence_end(SALIENCY_PATH, '%s/%s' % (name, sub_dir))
     evals = runner.state_action_evaluations(obs)
     print('\tEVALS: %s' % (str(evals),))
+
+
+def save_ms_pacman_pellet_removal_states(runner):
+  try:
+      os.makedirs(SALIENCY_PATH)
+  except FileExistsError:
+      print('Directory \'%s\' already exists. Skipping.' % (SALIENCY_PATH,))
+
+  all_axes = (3 if DQN_USE_COLOR else 1) + (DQN_NUM_OBJ if DQN_USE_OBJECTS else 0)
+
+  locs = np.load(SALIENCY_PATH + '/' + MS_PACMAN_PELLET_FILE)
+  obs = load_observations_sequence_end(SALIENCY_PATH, 'ms-pacman/original')
+  all_locs = np.zeros((2, 2, 4), dtype=np.uint8)
+  for loc_idx in range(locs.shape[0]):
+    print('LOCATION INDEX %2d...' % (loc_idx,))
+    obs_copy = np.copy(obs)
+    
+    for i in range(4):
+      all_locs[i // 2, np.mod(i, 2), :] = [locs[loc_idx, i]] * 4
+    
+    manip = manipulate_object(
+      runner,
+      obs_copy,
+      3,
+      Difference(dx=0, dy=0, show=False),
+      all_locs)
+    save_observations_sequence_end(
+      [
+        manip[0, ..., (all_axes * frame):(all_axes * (frame + 1))]
+        for frame in range(4)
+      ],
+      SALIENCY_PATH,
+      'ms-pacman/pellet-%d' % (loc_idx,))
+    print('DONE.')
+
+
+def create_object_saliency_map(runner, name, obj_list):
+  """Creates an object saliency map given a set of objects.
+
+  The objects are specified by absolute directory paths;
+  each of the directories stores the same observations
+  as the original, except that the object in question has
+  been removed. This removal allows for a comparison.
+
+  Args:
+    runner: The `run_experiment.Runner` to work with.
+    name: The name of the `SALIENCY_PATH` subdirectory.
+      Commonly the name of an Atari 2600 game. Should
+      not include an ending `/`.
+    obj_list: A list of subdirectories under
+      `SALIENCY_PATH/name`.
+  Returns:
+    map: The object saliency map.
+  """
+  map = np.zeros((84, 84), dtype=np.float32)
+  
+  original_obs = load_observations_sequence_end(
+    SALIENCY_PATH,
+    name + '/original'
+  )
+  original_eval = runner.state_action_evaluations(original_obs)
+  best_act, best_val = list(original_eval.items())[0]
+  
+  for act, val in original_eval.items():
+    if val > best_val:
+      best_act, best_val = act, val
+  for ctr, obj in enumerate(obj_list):
+    print(
+      'Considering object \'%s\' (%2d/%2d, %6.3lf%%)' %
+      (
+        obj,
+        ctr + 1,
+        len(obj_list),
+        ((ctr + 1) / len(obj_list)) * 1e2
+      )
+    )
+    obj_obs = load_observations_sequence_end(
+      SALIENCY_PATH,
+      name + '/' + obj
+    )
+    obj_val = runner.state_action_evaluations(obj_obs)[best_act]
+    val_diff = best_val - obj_val
+    for layer in range(DQN_NUM_OBJ if DQN_USE_OBJECTS else 0):
+      # We consider the last (newest) frame only: the valuation applies
+      # to the complete sequence of four observations, so it doesn't
+      # really matter which frame we pick.
+      layer_idx = -(DQN_NUM_OBJ - layer)
+      obs_diff = original_obs[0, ..., layer_idx] - obj_obs[0, ..., layer_idx]
+      map[np.where(obs_diff > 0)] = val_diff
+  return map
 
 
 def save_observations_sequence_end(obs, save_location, save_name):
@@ -161,7 +239,7 @@ def get_manipulation():
       stores the locations of the object through all four
       frames of the state. The third and last element contains
       the manipulation: a `(dy, dx, show)` triple. See
-      `run_experiment.Difference` for more info.
+      `Difference` for more info.
   """
   # first, get the index of the object to be manipulated
   obj_idx = int(input('(Index of object to manipulate? [This is the layer.]) '))
@@ -248,3 +326,24 @@ def manipulate_object(runner, obs, obj_idx, diff, all_locs):
         obs_idx] = imt_obj
   
   return modif
+
+
+def interactively_manipulate_observation(runner, pth, name, obs):
+  all_axes = \
+    (3 if DQN_USE_COLOR else 1) + (DQN_NUM_OBJ if DQN_USE_OBJECTS else 0)
+  manip_ctr = 0
+  while input('(Perform manipulation %d? [y/n]) ' % (manip_ctr,)) == 'y':
+    obj_idx, all_locs, diff = get_manipulation()
+
+    manip_obs = \
+      manipulate_object(runner, obs, obj_idx, diff, all_locs)
+    save_observations_sequence_end(
+      [
+        manip_obs[0, ..., (all_axes * frame):(all_axes * (frame + 1))]
+        for frame in range(4)
+      ],
+      pth,
+      '%s/manip-%d' % (name, manip_ctr)
+    )
+    obs = load_observations_sequence_end(pth, '%s/manip-%d' % (name, manip_ctr))
+    manip_ctr += 1

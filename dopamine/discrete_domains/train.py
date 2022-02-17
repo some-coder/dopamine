@@ -24,6 +24,8 @@ from absl import logging
 from dopamine.discrete_domains import run_experiment
 import tensorflow as tf
 import dopamine.discrete_domains.inspect_action_values as iav
+import matplotlib.pyplot as plt
+import matplotlib.colors as colors
 
 
 flags.DEFINE_string('base_dir', None,
@@ -59,8 +61,43 @@ def main(unused_argv):
   INSPECT_ACTION_VALUATIONS = True
 
   if INSPECT_ACTION_VALUATIONS:
-    name = input('(Name of saliency subdirectory?) ')
-    iav.inspect_action_valuations(runner, name)
+    # name = input('(Name of saliency subdirectory?) ')
+    # iav.inspect_action_valuations(runner, name)
+    map = iav.create_object_saliency_map(
+      runner,
+      'ms-pacman',
+      [
+        'pellet-%d' % (pel_idx) for pel_idx in range(215)
+      ] +
+      [
+        '%s-ghost-disappear' % (gh,) for gh in
+        (
+          'bottom-right',
+          'middle-left',
+          'middle-right',
+          'top-left'
+        )
+      ] +
+      [
+        'ms-pacman-%sdisappear' % (add,) for add in
+        (
+          '',
+          'first-life-',
+          'second-life-'
+        )
+      ]
+    )
+    
+    _, ax = plt.subplots()
+    shw = ax.imshow(map, vmin=-0.05, vmax=0.05, cmap='BrBG')
+    bar = plt.colorbar(shw)
+
+    plt.xlabel('Resized screen column (pixels)')
+    plt.ylabel('Resized screen row (pixels)')
+    bar.set_label('Q-value difference')
+
+    plt.tight_layout()
+    plt.savefig(iav.SALIENCY_PATH + 'ms-pacman/obj-sal-map.pdf')
   else:
     runner.run_experiment()
 
