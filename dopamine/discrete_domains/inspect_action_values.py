@@ -1,6 +1,13 @@
 import os
 import re
-from dopamine.discrete_domains.atari_lib import DQN_NUM_OBJ, DQN_USE_COLOR, DQN_USE_OBJECTS
+from dopamine.discrete_domains.atari_lib import \
+  DQNScreenMode, \
+  DQN_SCREEN_MODE, \
+  DQN_USE_OBJECTS, \
+  DQN_NUM_OBJ, \
+  DQN_SCREEN_LAY, \
+  DQN_OBJ_LAY, \
+  NATURE_DQN_STACK_SIZE
 from PIL import Image
 import numpy as np
 from collections import namedtuple
@@ -53,17 +60,18 @@ def save_ms_pacman_pellet_removal_states(runner):
   except FileExistsError:
       print('Directory \'%s\' already exists. Skipping.' % (SALIENCY_PATH,))
 
-  all_axes = (3 if DQN_USE_COLOR else 1) + (DQN_NUM_OBJ if DQN_USE_OBJECTS else 0)
+  all_axes = DQN_SCREEN_LAY + DQN_OBJ_LAY
 
   locs = np.load(SALIENCY_PATH + '/' + MS_PACMAN_PELLET_FILE)
   obs = load_observations_sequence_end(SALIENCY_PATH, 'ms-pacman/original')
-  all_locs = np.zeros((2, 2, 4), dtype=np.uint8)
+  all_locs = np.zeros((2, 2, NATURE_DQN_STACK_SIZE), dtype=np.uint8)
   for loc_idx in range(locs.shape[0]):
     print('LOCATION INDEX %2d...' % (loc_idx,))
     obs_copy = np.copy(obs)
     
-    for i in range(4):
-      all_locs[i // 2, np.mod(i, 2), :] = [locs[loc_idx, i]] * 4
+    for i in range(NATURE_DQN_STACK_SIZE):
+      all_locs[i // 2, np.mod(i, 2), :] = \
+        [locs[loc_idx, i]] * NATURE_DQN_STACK_SIZE
     
     manip = manipulate_object(
       runner,
@@ -74,7 +82,7 @@ def save_ms_pacman_pellet_removal_states(runner):
     save_observations_sequence_end(
       [
         manip[0, ..., (all_axes * frame):(all_axes * (frame + 1))]
-        for frame in range(4)
+        for frame in range(NATURE_DQN_STACK_SIZE)
       ],
       SALIENCY_PATH,
       'ms-pacman/pellet-%d' % (loc_idx,))
@@ -156,11 +164,11 @@ def save_observations_sequence_end(obs, save_location, save_name):
   except FileExistsError:
     print('\t(Overwriting contents of \'%s/%s\'...)' % (save_location, save_name))
   num_obj = DQN_NUM_OBJ if DQN_USE_OBJECTS else 0
-  for frame in range(4):
+  for frame in range(NATURE_DQN_STACK_SIZE):
     # frame 1 is the third-to-last frame, ..., frame 4 is the last frame
-    if DQN_USE_COLOR:
+    if DQN_SCREEN_MODE == DQNScreenMode.RGB:
       Image.fromarray(
-        obs[-(4 - frame)][..., :3]
+        obs[-(NATURE_DQN_STACK_SIZE - frame)][..., :3]
       ).save(
         os.path.join(
           save_location,
@@ -168,9 +176,9 @@ def save_observations_sequence_end(obs, save_location, save_name):
           '%d.png' % (frame + 1,)
         )
       )
-    else:
+    elif DQN_SCREEN_MODE == DQNScreenMode.GRAYSCALE:
       Image.fromarray(
-        obs[-(4 - frame)][..., 0], 'L'
+        obs[-(NATURE_DQN_STACK_SIZE - frame)][..., 0], 'L'
       ).save(
         os.path.join(
           save_location,
@@ -180,7 +188,7 @@ def save_observations_sequence_end(obs, save_location, save_name):
       )
     for obj_idx in range(num_obj):
       Image.fromarray(
-        obs[-(4 - frame)][..., (3 if DQN_USE_COLOR else 1) + obj_idx],
+        obs[-(NATURE_DQN_STACK_SIZE - frame)][..., DQN_SCREEN_LAY + obj_idx],
         'L'
       ).save(
         os.path.join(
@@ -202,18 +210,23 @@ def load_observations_sequence_end(load_location, load_name):
     obs: The last four observations from the sequence. Returned
       as a NumPy array.
   """
-  prev_axes = 3 if DQN_USE_COLOR else 1
-  all_axes = prev_axes + (DQN_NUM_OBJ if DQN_USE_OBJECTS else 0)
-  layers = 4 * all_axes
+  all_axes = DQN_SCREEN_LAY + DQN_OBJ_LAY
+  layers = NATURE_DQN_STACK_SIZE * all_axes
   num_obj = DQN_NUM_OBJ if DQN_USE_OBJECTS else 0
 
   obs = np.zeros((1, 84, 84, layers), dtype=np.uint8)
-  for frame in range(4):
+  for frame in range(NATURE_DQN_STACK_SIZE):
     # store frame screen image (RGB or grayscale)
     img = Image.open(
       os.path.join(load_location, load_name, '%d.png' % (frame + 1,)))
-    obs[..., (all_axes * frame):(all_axes * frame + prev_axes)] = \
-      np.array(img) if DQN_USE_COLOR else np.array(img)[..., np.newaxis]
+    
+    if DQN_SCREEN_MODE == DQNScreenMode.RGB:
+      obs[..., (all_axes * frame):(all_axes * frame + DQN_SCREEN_LAY)] = \
+        np.array(img)
+    elif DQN_SCREEN_MODE == DQNScreenMode.GRAYSCALE:
+      obs[..., (all_axes * frame):(all_axes * frame + DQN_SCREEN_LAY)] = \
+        np.array(img)[..., np.newaxis]
+
     # store frame screen objects
     for obj_idx in range(num_obj):
       obj_img = Image.open(
@@ -221,7 +234,7 @@ def load_observations_sequence_end(load_location, load_name):
           load_location,
           load_name,
           '%d-obj-%d.png' % (frame + 1, obj_idx + 1)))
-      pre = all_axes * frame + prev_axes
+      pre = all_axes * frame + DQN_SCREEN_LAY
       obs[..., (pre + obj_idx):(pre + obj_idx + 1)] = \
         np.array(obj_img)[..., np.newaxis]
   
@@ -245,9 +258,9 @@ def get_manipulation():
   obj_idx = int(input('(Index of object to manipulate? [This is the layer.]) '))
 
   # second, get the location of the object in all four frames
-  all_locs = np.zeros((2, 2, 4), dtype=np.int8)
-  for frame in range(4):
-    print('\t[FRAME %d/4]' % (frame + 1,))
+  all_locs = np.zeros((2, 2, NATURE_DQN_STACK_SIZE), dtype=np.int8)
+  for frame in range(NATURE_DQN_STACK_SIZE):
+    print('\t[FRAME %d/%d]' % (frame + 1, NATURE_DQN_STACK_SIZE))
     all_locs[0, 0, frame] = int(input('\t    (Top-left X. Inclusive.) '))
     all_locs[0, 1, frame] = int(input('\t    (Top-left Y. Inclusive.) '))
     all_locs[1, 0, frame] = int(input('\t(Bottom-right X. Inclusive.) '))
@@ -291,12 +304,11 @@ def manipulate_object(runner, obs, obj_idx, diff, all_locs):
   """
   modif = np.zeros(obs.shape, dtype=np.uint8)
   modif[:] = obs
-  prev_axes = 3 if DQN_USE_COLOR else 1
   
   # copy the screen layer(s)
-  modif[0, ..., :prev_axes] = \
-    obs[0, ..., :prev_axes]
-  frm_layers = prev_axes + DQN_NUM_OBJ
+  modif[0, ..., :DQN_SCREEN_LAY] = \
+    obs[0, ..., :DQN_SCREEN_LAY]
+  frm_layers = DQN_SCREEN_LAY + DQN_OBJ_LAY
   
   for obs_idx in range(obs.shape[-1]):
     if obs_idx % frm_layers != obj_idx:
@@ -329,8 +341,7 @@ def manipulate_object(runner, obs, obj_idx, diff, all_locs):
 
 
 def interactively_manipulate_observation(runner, pth, name, obs):
-  all_axes = \
-    (3 if DQN_USE_COLOR else 1) + (DQN_NUM_OBJ if DQN_USE_OBJECTS else 0)
+  all_axes = DQN_SCREEN_LAY + DQN_OBJ_LAY
   manip_ctr = 0
   while input('(Perform manipulation %d? [y/n]) ' % (manip_ctr,)) == 'y':
     obj_idx, all_locs, diff = get_manipulation()

@@ -25,7 +25,8 @@ from dopamine.discrete_domains import run_experiment
 import tensorflow as tf
 import dopamine.discrete_domains.inspect_action_values as iav
 import matplotlib.pyplot as plt
-import matplotlib.colors as colors
+
+import numpy as np
 
 
 flags.DEFINE_string('base_dir', None,
@@ -49,6 +50,12 @@ def main(unused_argv):
   Args:
     unused_argv: Arguments (unused).
   """
+  NUMPY_SEED = 1
+  TENSORFLOW_SEED = 1
+
+  np.random.seed(NUMPY_SEED)
+  tf.random.set_seed(TENSORFLOW_SEED)
+
   logging.set_verbosity(logging.INFO)
   tf.compat.v1.disable_v2_behavior()
 
@@ -58,7 +65,7 @@ def main(unused_argv):
   run_experiment.load_gin_configs(gin_files, gin_bindings)
   runner = run_experiment.create_runner(base_dir)
 
-  INSPECT_ACTION_VALUATIONS = True
+  INSPECT_ACTION_VALUATIONS = False
 
   if INSPECT_ACTION_VALUATIONS:
     # name = input('(Name of saliency subdirectory?) ')

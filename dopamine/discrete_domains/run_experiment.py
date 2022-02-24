@@ -44,7 +44,12 @@ import gin.tf
 
 import cv2
 from collections import namedtuple
-from dopamine.discrete_domains.atari_lib import DQN_USE_COLOR, DQN_NUM_OBJ
+from dopamine.discrete_domains.atari_lib import \
+  DQNScreenMode, \
+  DQN_NUM_OBJ, \
+  DQN_SCREEN_MODE, \
+  DQN_SCREEN_LAY, \
+  DQN_OBJ_LAY
 from PIL import Image
 
 
@@ -542,7 +547,8 @@ class Runner(object):
     """Evaluates the supplied state per action that can be taken.
 
     Args:
-      state: The state. A `(1, obs_dim.shape[:2], stack_size * (3 if DQN_USE_COLOR else 1))`.
+      state: The state. A `(1, obs_dim.shape[:2], NATURE_DQN_STACK_SIZE *
+      (DQN_SCREEN_LAY + DQN_OBJ_LAY))`.
     Returns:
       evals: The action evaluations for the state.
     """
@@ -570,10 +576,16 @@ class Runner(object):
       rep = int(input('(# action repeats) '))
       for _ in range(rep):
         obs, _, _, _ = self._environment.step(action)
-        if DQN_USE_COLOR:
+        if DQN_SCREEN_MODE == DQNScreenMode.RGB:
           Image.fromarray(obs[..., :3]).save(save_location + '/state.png')
-        else:
+        elif DQN_SCREEN_MODE == DQNScreenMode.GRAYSCALE:
           Image.fromarray(obs[..., 0], 'L').save(save_location + '/state.png')
+        elif DQN_SCREEN_MODE == DQNScreenMode.OFF:
+          Image.fromarray(
+            self._environment.environment.ale.getScreenGrayscale(), 'L'
+          ).save(
+            save_location + '/state.png'
+          )
         obs_li.append(obs)
       action = input('(Frame %3d): ' % (self._environment.environment.ale.getFrameNumber(),))
     return obs_li
@@ -600,11 +612,10 @@ class Runner(object):
     """
     modif = np.zeros(state.shape, dtype=np.uint8)
     modif[:] = state
-    prev_axes = 3 if DQN_USE_COLOR else 1
     # copy the screen layer(s)
-    modif[0, ..., :prev_axes] = \
-      state[0, ..., :prev_axes]
-    frm_layers = prev_axes + DQN_NUM_OBJ
+    modif[0, ..., :DQN_SCREEN_LAY] = \
+      state[0, ..., :DQN_SCREEN_LAY]
+    frm_layers = DQN_SCREEN_LAY + DQN_OBJ_LAY
     for obs_idx in range(state.shape[-1]):
       if obs_idx % frm_layers != layer:
         continue  # not the right layer

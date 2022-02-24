@@ -56,23 +56,60 @@ from typing import Dict, Tuple, Optional, Union
 import os
 import re
 from PIL import Image
+from enum import Enum
 
 
-# whether to use three color channels or just one grayscale channel
-DQN_USE_COLOR = False
+
+class DQNScreenMode(Enum):
+  """
+  A way of presenting the screen as input.
+  """
+  OFF = 'off'
+  GRAYSCALE = 'grayscale'
+  RGB = 'rgb'
+
+
+# The way of representing the screen in the DQN input.
+DQN_SCREEN_MODE = DQNScreenMode.OFF
+
 # Whether to introduce object channels. Number of channels may vary per game.
+# If `DQNScreenMode` is set to `OFF`, then `DQN_USE_OBJECTS` is automatically
+# `True`.
 DQN_USE_OBJECTS = True
+if DQN_SCREEN_MODE == DQN_SCREEN_MODE.OFF:
+  DQN_USE_OBJECTS = True  # for if it were `False`, we would have nothing
+
 # the location on disk of the object images
 if re.search('(s3366235)', os.environ['HOME']):
   DQN_OBJECTS_LOC = os.path.join('/', 'data', 's3366235', 'master-thesis', 'objects')
 else:
   DQN_OBJECTS_LOC = os.path.join(os.environ['HOME'], 'Documents', 'test', 'objects')
+
 # The number of object channels to use, *if* we use objects. Should minimally
 # be the number of objects for your game.
 DQN_NUM_OBJ = 4
 
-NATURE_DQN_OBSERVATION_SHAPE = \
-  (84, 84, (3 if DQN_USE_COLOR else 1) + (DQN_NUM_OBJ if DQN_USE_OBJECTS else 0))
+# The number of channels dedicated to the raw screen footage.
+# May be zero in the case that `DQN_SCREEN_MODE == .OFF`.
+if DQN_SCREEN_MODE == DQNScreenMode.OFF:
+  DQN_SCREEN_LAY = 0
+elif DQN_SCREEN_MODE == DQNScreenMode.GRAYSCALE:
+  DQN_SCREEN_LAY = 1
+elif DQN_SCREEN_MODE == DQNScreenMode.RGB:
+  DQN_SCREEN_LAY = 3
+
+# The number of channels dedicated to the objects.
+# May be zero in the case that `DQN_USE_OBJECTS == False`.
+# Has an extra object channel for the walls (or floors) if
+# we solely use objects.
+DQN_OBJ_LAY = \
+  (DQN_NUM_OBJ if DQN_USE_OBJECTS else 0) + (1 if DQN_SCREEN_MODE == DQNScreenMode.OFF else 0)
+
+NATURE_DQN_OBSERVATION_SHAPE = (
+  84,
+  84,
+  DQN_SCREEN_LAY + DQN_OBJ_LAY
+)
 NATURE_DQN_DTYPE = tf.uint8  # DType of Atari 2600 observations.
 NATURE_DQN_STACK_SIZE = 4  # Number of frames in the state stack.
 
@@ -152,39 +189,63 @@ def maybe_transform_variable_names(variables, legacy_checkpoint_load=False):
   return name_map
 
 
-def atari_objects_map(game_name: str) -> Optional[Dict[str, Tuple[np.ndarray, float]]]:
-  """Returns a mapping from objects to template-threshold pairs.
+def atari_objects_map(game_name: str) -> \
+    Optional[Dict[str, Tuple[np.ndarray, Union[float, Tuple[float, ...]], bool]]]:
+  """Returns a mapping from objects to three-triples.
+
+  The three-triples consist of the following elements:
+  1. A template to match. Only if `DQN_SCREEN_MODE` is `.RGB`, this template
+    has 3 channels; it otherwise has only 1.
+  2. A threshold or a tuple of two or more thresholds. The matching
+    threshold. If multiple thresholds are defined, you are responsible
+    for invoking the desired threshold on a use-case basis.
+  3. A flag. Indicates whether to use a mask (`True`) or not (`False`).
 
   Args:
     game_name: The name of the game. Example: `'Pong'`.
   Returns:
     Possibly a mapping.
   """
-  out: Optional[Dict[str, Tuple[np.ndarray, float]]] = None
-  li: Optional[Tuple[Tuple[str, float]]] = None
+  out: Optional[Dict[str, Tuple[np.ndarray, Union[float, Tuple[float, ...]], bool]]] = None
+  li: Optional[Tuple[Tuple[str, Union[float, Tuple[float, ...]], bool]]] = None
+
   if game_name == 'Pong':
     li = (
-      ('green-paddle', 0.89),
-      ('ball', 0.89))
+      ('paddle-piece-wide', 0.01, False),
+      ('ball-padded', 0.15, False)
+    )
+    if DQN_SCREEN_MODE == DQNScreenMode.OFF:
+      li = li + (('wall', 0.014, False),)
   elif game_name == 'FishingDerby':
-    li = (
-      ('tackle', 0.8),
-      ('fish', 0.6),
-      ('shark', 0.6))
+    raise ValueError('You need to update the values for FishingDerby!')
+    # li = (
+    #   ('tackle', 0.8),
+    #   ('fish', 0.6),
+    #   ('shark', 0.6))
   elif game_name == 'MsPacman':
     li = (
-      ('ms-pacman', 0.6),
-      ('clyde-yellow', 0.65),
-      ('pellet', 0.9),
-      ('power-pellet', 0.9))
+      ('yellow', 0.001, False),  # for matching Ms. Pac-Man
+      ('clyde-yellow-padded', 0.25, False),
+      ('pellet-padded', 0.1, False),
+      ('power-pellet-padded', 0.067, False)
+    )
+    if DQN_SCREEN_MODE == DQNScreenMode.OFF:
+      li = li + (('background', (105e3, 64e3, 119e3, 119e3), True),)
   if li is not None:
     out = {}
     pth = os.path.join(DQN_OBJECTS_LOC, game_name)
-    for name, thr in li:
-      obj_pth = '%s-padded.png' % (name,)
+    print(li)
+    for name, thr, use_mask in li:
+      obj_pth = '%s.png' % (name,)
       tmpl = Image.open(os.path.join(pth, obj_pth))
-      tmpl = np.array(tmpl if DQN_USE_COLOR else tmpl.convert('L'))
-      out[name] = (tmpl, thr)
+      tmpl = np.array(tmpl if DQN_SCREEN_MODE == DQNScreenMode.RGB else tmpl.convert('L'))
+      if use_mask:
+        mask_pth = '%s-mask.png' % (name,)
+        mask = Image.open(os.path.join(pth, mask_pth))
+        mask = np.array(mask)[..., 0]  # just a 2D map
+        out[name] = (tmpl, thr, mask)
+      else:
+        out[name] = (tmpl, thr, None)
   return out
 
 
@@ -196,22 +257,22 @@ def atari_background_color(game_name: str) -> \
     game_name: The name of the Atari 2600 game to get the background
       color of.
   Returns:
-    col: The background color. If `DQN_USE_COLOR` is `True`, then
-      it yields a triple of RGB `uint8`s. If it's `False`, it will
+    col: The background color. If `DQN_SCREEN_MODE` is `DQNScreenMode.RGB`,
+      then it yields a triple of RGB `uint8`s. If it's `False`, it will
       yield a single value: the grayscale background 'color'.
   """
   if game_name == 'Pong':
-    if DQN_USE_COLOR:
+    if DQNScreenMode.RGB:
       return (np.uint8(144), np.uint8(72), np.uint8(17))
     else:
       return (np.uint8(87),)
   elif game_name == 'FishingDerby':
-    if DQN_USE_COLOR:
+    if DQNScreenMode.RGB:
       return (np.uint8(24), np.uint8(26), np.uint8(167))
     else:
       return (np.uint8(41),)
   elif game_name == 'MsPacman':
-    if DQN_USE_COLOR:
+    if DQNScreenMode.RGB:
       return (np.uint8(0), np.uint8(28), np.uint8(136))
     else:
       return (np.uint8(32),)
@@ -494,6 +555,9 @@ class AtariPreprocessing(object):
 
     self.objects = objects
     self.bg_color = bg_color
+    self.dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    self.game_name = re.match('[a-zA-Z+]', self.environment.unwrapped.spec.id).group().replace('NoFrameskip', '')
+    self.is_ms_pacman = self.game_name == 'MsPacman'
 
   @property
   def observation_space(self):
@@ -527,13 +591,19 @@ class AtariPreprocessing(object):
     self.environment.reset()
     self.lives = self.environment.ale.lives()
     
-    if DQN_USE_COLOR:
+    if DQN_SCREEN_MODE == DQNScreenMode.RGB:
       self._fetch_rgb_observation(self.screen_buffer[0])
-    else:
+    elif DQN_SCREEN_MODE == DQNScreenMode.GRAYSCALE:
       self._fetch_grayscale_observation(self.screen_buffer[0])
+    elif DQN_SCREEN_MODE == DQNScreenMode.OFF:
+      self._fetch_screen_off_observation(self.screen_buffer[0])
 
     self.screen_buffer[1].fill(0)
-    return self._color_average_and_resize() if DQN_USE_COLOR else self._pool_and_resize()
+    if DQN_SCREEN_MODE == DQNScreenMode.RGB:
+      return self._color_average_and_resize()
+    else:
+      # this includes the sitatuation where the screen is off
+      return self._pool_and_resize()
 
   def render(self, mode):
     """Renders the current screen, before preprocessing.
@@ -593,15 +663,18 @@ class AtariPreprocessing(object):
       # We aggregate over the last two frames.
       elif time_step >= self.frame_skip - 2:
         t = time_step - (self.frame_skip - 2)
-        if DQN_USE_COLOR:
+        if DQN_SCREEN_MODE == DQNScreenMode.RGB:
           self._fetch_rgb_observation(self.screen_buffer[t])
-        else:
+        elif DQN_SCREEN_MODE == DQNScreenMode.GRAYSCALE:
           self._fetch_grayscale_observation(self.screen_buffer[t])
+        elif DQN_SCREEN_MODE == DQNScreenMode.OFF:
+          self._fetch_screen_off_observation(self.screen_buffer[t])
 
     # Aggregate over the last two observations (frames)
-    if DQN_USE_COLOR:
+    if DQN_SCREEN_MODE == DQNScreenMode.RGB:
       observation = self._color_average_and_resize()
     else:
+      # this includes the situation where we have the screen turned off
       observation = self._pool_and_resize()
 
     self.game_over = game_over
@@ -615,6 +688,10 @@ class AtariPreprocessing(object):
     The returned observation is stored in `obj_obs`. (So, NumPy arrays are
     'pass by reference'.)
 
+    Note that we use `cv2.TM_SQDIFF` instead of `cv2.TM_SQDIFF_NORMED` if
+    an object has a non-`None` `mask` entry associated to it: only
+    `cv2.TM_CCORR_NORMED` and `cv2.SQDIFF` are defined for use with masks.
+
     Args:
       obs: The 'normal' game observation from which to derive object layers.
     
@@ -624,33 +701,51 @@ class AtariPreprocessing(object):
     """
     if not DQN_USE_OBJECTS:
       return None  # if we get here, the caller (me) likely made a mistake
+    
     keys = list(self.objects.keys())
-    # the axes for the RGB or grayscale screen
-    prev_axes = 3 if DQN_USE_COLOR else 1
-    obs[..., prev_axes:].fill(0)  # Remove all previous contents. Use pass-by-reference.
+    obs[..., DQN_SCREEN_LAY:].fill(0)  # Remove all previous contents. Use pass-by-reference.
+    
+    # stand-in for `obs[..., :DQN_SCREEN_LAY]` in case we only store
+    # object channels
+    if DQN_SCREEN_MODE == DQNScreenMode.OFF:
+      screen = self.environment.ale.getScreenGrayscale()
+    else:
+      screen = None
+
+    # fill the object channels based on either `obs` or `screen`
     for index in range(DQN_NUM_OBJ):
-      # fill per object the channel depending on the contents of `obs`
-      tmpl, thr = self.objects[keys[index]]
-      cc = cv2.matchTemplate(obs[..., :prev_axes], tmpl, cv2.TM_CCOEFF_NORMED)
-      locs = np.where(cc > thr)
+      special_case = self.is_ms_pacman and index == DQN_NUM_OBJ - 1 and DQN_SCREEN_MODE == DQNScreenMode.OFF
+      
+      tmpl, thr, mask = self.objects[keys[index]]  # `mask` may be `None`
+      cc = cv2.matchTemplate(
+        screen if DQN_SCREEN_MODE == DQNScreenMode.OFF else obs[..., :DQN_SCREEN_LAY],
+        tmpl,
+        cv2.TM_SQDIFF_NORMED if mask is None else cv2.TM_SQDIFF,
+        mask=mask)
+      if special_case:
+        # separate thresholds based on the maze in which Ms. Pac-Man is in 
+        if screen[1, 0] == 146:
+          locs = np.where(cc < thr[0])
+        elif screen[1, 0] == 121:
+          locs = np.where(cc < thr[1])
+        elif screen[1, 0] == 170:
+          locs = np.where(cc < thr[2])
+        elif screen[1, 0] == 132:
+          locs = np.where(cc < thr[3])
+      else:
+        locs = np.where(cc < thr)  # minimise the squared difference
       for y, x in zip(*locs):
-        # for maximal contrast, we set 'on' pixels to the maximal UInt8 value
-        obs[y:(y + tmpl.shape[0]), x:(x + tmpl.shape[1]), prev_axes + index] = 255
+        obs[
+          y:(y + tmpl.shape[0]),
+          x:(x + tmpl.shape[1]),
+          DQN_SCREEN_LAY + index
+        ] = 255  # set to maximal contrast
+      if special_case:
+        # special situation: thicken lines of path for Ms. Pac-Man
+        obs[..., DQN_SCREEN_LAY + index] = \
+          cv2.dilate(obs[..., DQN_SCREEN_LAY + index], self.dilate_kernel, iterations=1)
+    
     return obs
-
-  def _fetch_grayscale_observation(self, output):
-    """Returns the current observation in grayscale.
-
-    The returned observation is stored in 'output'.
-
-    Args:
-      output: numpy array, screen buffer to hold the returned observation.
-
-    Returns:
-      observation: numpy array, the current observation in grayscale.
-    """
-    output[:, :, 0] = self.environment.ale.getScreenGrayscale()
-    return self._fetch_objects_observation(output) if DQN_USE_OBJECTS else output
 
   def _fetch_rgb_observation(self, output):
     """Returns the current observation in full colour (RGB).
@@ -666,6 +761,33 @@ class AtariPreprocessing(object):
     output[:, :, :3] = self.environment.ale.getScreenRGB()
     return self._fetch_objects_observation(output) if DQN_USE_OBJECTS else output
 
+  def _fetch_grayscale_observation(self, output):
+    """Returns the current observation in grayscale.
+
+    The returned observation is stored in 'output'.
+
+    Args:
+      output: numpy array, screen buffer to hold the returned observation.
+
+    Returns:
+      observation: numpy array, the current observation in grayscale.
+    """
+    output[:, :, 0] = self.environment.ale.getScreenGrayscale()
+    return self._fetch_objects_observation(output) if DQN_USE_OBJECTS else output
+
+  def _fetch_screen_off_observation(self, output):
+    """Returns the current observation. Only the object channels are supplied.
+
+    The returned observation is stored in `output`.
+
+    Args:
+      output: numpy array, screen buffer to hold the returned observation.
+    
+    Returns:
+      observation: numpy array, the current observation in object channels.
+    """
+    return self._fetch_objects_observation(output)
+
   def _transform_observation(self, resz, screen, objs=None):
     """Transforms the observation to the size of the screen.
     
@@ -677,15 +799,14 @@ class AtariPreprocessing(object):
     Returns:
       Nothing. See the output in `resz` instead.
     """
-    prev_axes = 3 if DQN_USE_COLOR else 1
-    if DQN_USE_COLOR:
-      resz[:, :, :prev_axes] = cv2.resize(
-        screen[..., :prev_axes],
+    if DQN_SCREEN_MODE == DQNScreenMode.RGB:
+      resz[:, :, :DQN_SCREEN_LAY] = cv2.resize(
+        screen[..., :DQN_SCREEN_LAY],
         (self.screen_size, self.screen_size),
         cv2.INTER_AREA)
-    else:
-      resz[:, :, :prev_axes] = cv2.resize(
-        screen[..., :prev_axes],
+    elif DQN_SCREEN_MODE == DQNScreenMode.GRAYSCALE:
+      resz[:, :, :DQN_SCREEN_LAY] = cv2.resize(
+        screen[..., :DQN_SCREEN_LAY],
         (self.screen_size, self.screen_size),
         cv2.INTER_AREA)[..., np.newaxis]
     if not DQN_USE_OBJECTS:
@@ -693,7 +814,7 @@ class AtariPreprocessing(object):
     for index in range(DQN_NUM_OBJ):
       # No enclosing square braces around `index`: `resize` for 1 channel
       # yields 2D image (not a 3D one).
-      resz[..., prev_axes + index] = cv2.resize(
+      resz[..., DQN_SCREEN_LAY + index] = cv2.resize(
         objs[..., [index]],
         (self.screen_size, self.screen_size),
         cv2.INTER_AREA)
@@ -707,35 +828,36 @@ class AtariPreprocessing(object):
     Returns:
       transformed_screen: numpy array, pooled, resized screen.
     """
-    prev_axes = 3 if DQN_USE_COLOR else 1
-
-    # Pool if there are enough screens to do so.
+    # Pool if there are enough screens to do so. The call even works if we have
+    # `DQN_SCREEN_LAY` set to `0`. In that case, no real operation takes place.
     if self.frame_skip > 1:
       np.maximum(
-        self.screen_buffer[0][..., :prev_axes],
-        self.screen_buffer[1][..., :prev_axes],
-        out=self.screen_buffer[0][..., :prev_axes])
+        self.screen_buffer[0][..., :DQN_SCREEN_LAY],
+        self.screen_buffer[1][..., :DQN_SCREEN_LAY],
+        out=self.screen_buffer[0][..., :DQN_SCREEN_LAY])
     
     resz = np.zeros(NATURE_DQN_OBSERVATION_SHAPE, dtype=np.uint8)
     if DQN_USE_OBJECTS:
       if self.frame_skip > 1:
+        # If we have objects, also max-pool over the object channels.
         np.maximum(
-          self.screen_buffer[0][..., prev_axes:],
-          self.screen_buffer[1][..., prev_axes:],
-          out=self.screen_buffer[0][..., prev_axes:])
+          self.screen_buffer[0][..., DQN_SCREEN_LAY:],
+          self.screen_buffer[1][..., DQN_SCREEN_LAY:],
+          out=self.screen_buffer[0][..., DQN_SCREEN_LAY:])
       # resizing happens per-channel, so we can jointly resize
       # the RGB (or grayscale) channel(s) along with the object channels
       self._transform_observation(
         resz,
-        self.screen_buffer[0][..., :prev_axes],
-        self.screen_buffer[0][..., prev_axes:])
-      int_screen = np.asarray(resz, dtype=np.uint8)
+        self.screen_buffer[0][..., :DQN_SCREEN_LAY],
+        self.screen_buffer[0][..., DQN_SCREEN_LAY:])
       int_screen = np.asarray(resz, dtype=np.uint8)
       return int_screen
     else:
+      # just resize the RGB (or grayscale) channel(s)
       self._transform_observation(
         resz,
-        self.screen_buffer[0][..., :prev_axes])
+        self.screen_buffer[0][..., :DQN_SCREEN_LAY])
+      int_screen = np.asarray(resz, dtype=np.uint8)
       return int_screen
   
   def _color_average_and_resize(self):
@@ -744,16 +866,15 @@ class AtariPreprocessing(object):
     Returns:
       transformed_screen: Numpy array. Color-averaged, resized screen.
     """
-    prev_axes = 3 if DQN_USE_COLOR else 1
-    screen_0 = self.screen_buffer[0][..., :prev_axes]
-    screen_1 = self.screen_buffer[1][..., :prev_axes]
+    screen_0 = self.screen_buffer[0][..., :DQN_SCREEN_LAY]
+    screen_1 = self.screen_buffer[1][..., :DQN_SCREEN_LAY]
 
     if self.frame_skip > 1:
       screen_0 = np.mean([screen_0, screen_1], axis=0).astype(np.uint8)
     
     if DQN_USE_OBJECTS:
-      obj_channels_0 = self.screen_buffer[0][..., prev_axes:]
-      obj_channels_1 = self.screen_buffer[1][..., prev_axes:]
+      obj_channels_0 = self.screen_buffer[0][..., DQN_SCREEN_LAY:]
+      obj_channels_1 = self.screen_buffer[1][..., DQN_SCREEN_LAY:]
       if self.frame_skip > 1:
         np.maximum(obj_channels_0, obj_channels_1, out=obj_channels_0)
       # resizing happens per-channel, so we can jointly resize
