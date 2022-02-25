@@ -57,6 +57,7 @@ import os
 import re
 from PIL import Image
 from enum import Enum
+import matplotlib.pyplot as plt
 
 
 
@@ -88,6 +89,8 @@ else:
 # The number of object channels to use, *if* we use objects. Should minimally
 # be the number of objects for your game.
 DQN_NUM_OBJ = 4
+if DQN_SCREEN_MODE == DQNScreenMode.OFF:
+  DQN_NUM_OBJ += 1  # for walls and floors
 
 # The number of channels dedicated to the raw screen footage.
 # May be zero in the case that `DQN_SCREEN_MODE == .OFF`.
@@ -100,10 +103,7 @@ elif DQN_SCREEN_MODE == DQNScreenMode.RGB:
 
 # The number of channels dedicated to the objects.
 # May be zero in the case that `DQN_USE_OBJECTS == False`.
-# Has an extra object channel for the walls (or floors) if
-# we solely use objects.
-DQN_OBJ_LAY = \
-  (DQN_NUM_OBJ if DQN_USE_OBJECTS else 0) + (1 if DQN_SCREEN_MODE == DQNScreenMode.OFF else 0)
+DQN_OBJ_LAY = DQN_NUM_OBJ if DQN_USE_OBJECTS else 0
 
 NATURE_DQN_OBSERVATION_SHAPE = (
   84,
@@ -224,8 +224,8 @@ def atari_objects_map(game_name: str) -> \
     #   ('shark', 0.6))
   elif game_name == 'MsPacman':
     li = (
-      ('yellow', 0.001, False),  # for matching Ms. Pac-Man
-      ('clyde-yellow-padded', 0.25, False),
+      ('yellow-2', 0.001, False),  # for matching Ms. Pac-Man
+      ('blinky-red-padded', 0.25, False),
       ('pellet-padded', 0.1, False),
       ('power-pellet-padded', 0.067, False)
     )
@@ -234,7 +234,6 @@ def atari_objects_map(game_name: str) -> \
   if li is not None:
     out = {}
     pth = os.path.join(DQN_OBJECTS_LOC, game_name)
-    print(li)
     for name, thr, use_mask in li:
       obj_pth = '%s.png' % (name,)
       tmpl = Image.open(os.path.join(pth, obj_pth))
@@ -242,7 +241,7 @@ def atari_objects_map(game_name: str) -> \
       if use_mask:
         mask_pth = '%s-mask.png' % (name,)
         mask = Image.open(os.path.join(pth, mask_pth))
-        mask = np.array(mask)[..., 0]  # just a 2D map
+        mask = np.array(mask)  # is already 2D (without third depth dimension)
         out[name] = (tmpl, thr, mask)
       else:
         out[name] = (tmpl, thr, None)
@@ -287,11 +286,12 @@ def atari_check_num_objects(game_name: str) -> None:
     game_name: The name of the Atari 2600 game to check the number of objects
       for.
   """
-  if game_name == 'Pong' and DQN_NUM_OBJ == 2:
+  num_obj = DQN_NUM_OBJ - (1 if DQN_SCREEN_MODE == DQNScreenMode.OFF else 0)
+  if game_name == 'Pong' and num_obj == 2:
     return
-  elif game_name == 'FishingDerby' and DQN_NUM_OBJ == 3:
+  elif game_name == 'FishingDerby' and num_obj == 3:
     return
-  elif game_name == 'MsPacman' and DQN_NUM_OBJ == 4:
+  elif game_name == 'MsPacman' and num_obj == 4:
     return
   else:
     raise ValueError(
@@ -556,7 +556,7 @@ class AtariPreprocessing(object):
     self.objects = objects
     self.bg_color = bg_color
     self.dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    self.game_name = re.match('[a-zA-Z+]', self.environment.unwrapped.spec.id).group().replace('NoFrameskip', '')
+    self.game_name = re.match('[a-zA-Z]+', self.environment.unwrapped.spec.id).group().replace('NoFrameskip', '')
     self.is_ms_pacman = self.game_name == 'MsPacman'
 
   @property
@@ -717,7 +717,7 @@ class AtariPreprocessing(object):
       special_case = self.is_ms_pacman and index == DQN_NUM_OBJ - 1 and DQN_SCREEN_MODE == DQNScreenMode.OFF
       
       tmpl, thr, mask = self.objects[keys[index]]  # `mask` may be `None`
-      cc = cv2.matchTemplate(
+      sd = cv2.matchTemplate(
         screen if DQN_SCREEN_MODE == DQNScreenMode.OFF else obs[..., :DQN_SCREEN_LAY],
         tmpl,
         cv2.TM_SQDIFF_NORMED if mask is None else cv2.TM_SQDIFF,
@@ -725,25 +725,28 @@ class AtariPreprocessing(object):
       if special_case:
         # separate thresholds based on the maze in which Ms. Pac-Man is in 
         if screen[1, 0] == 146:
-          locs = np.where(cc < thr[0])
+          locs = np.where(sd < thr[0])
         elif screen[1, 0] == 121:
-          locs = np.where(cc < thr[1])
+          locs = np.where(sd < thr[1])
         elif screen[1, 0] == 170:
-          locs = np.where(cc < thr[2])
+          locs = np.where(sd < thr[2])
         elif screen[1, 0] == 132:
-          locs = np.where(cc < thr[3])
+          locs = np.where(sd < thr[3])
       else:
-        locs = np.where(cc < thr)  # minimise the squared difference
-      for y, x in zip(*locs):
-        obs[
-          y:(y + tmpl.shape[0]),
-          x:(x + tmpl.shape[1]),
-          DQN_SCREEN_LAY + index
-        ] = 255  # set to maximal contrast
+        locs = np.where(sd < thr)  # minimise the squared difference
       if special_case:
         # special situation: thicken lines of path for Ms. Pac-Man
+        obs[locs[0], locs[1], DQN_SCREEN_LAY + index] = 255  # create 'thin' path
         obs[..., DQN_SCREEN_LAY + index] = \
           cv2.dilate(obs[..., DQN_SCREEN_LAY + index], self.dilate_kernel, iterations=1)
+      else:
+        # just paste the template's silhouette onto matching locations
+        for y, x in zip(*locs):
+          obs[
+            y:(y + tmpl.shape[0]),
+            x:(x + tmpl.shape[1]),
+            DQN_SCREEN_LAY + index
+          ] = 255  # set to maximal contrast
     
     return obs
 
