@@ -88,7 +88,7 @@ else:
 
 # The number of object channels to use, *if* we use objects. Should minimally
 # be the number of objects for your game.
-DQN_NUM_OBJ = 4
+DQN_NUM_OBJ = 2
 if DQN_SCREEN_MODE == DQNScreenMode.OFF:
   DQN_NUM_OBJ += 1  # for walls and floors
 
@@ -238,6 +238,7 @@ def atari_objects_map(game_name: str) -> \
       obj_pth = '%s.png' % (name,)
       tmpl = Image.open(os.path.join(pth, obj_pth))
       tmpl = np.array(tmpl if DQN_SCREEN_MODE == DQNScreenMode.RGB else tmpl.convert('L'))
+
       if use_mask:
         mask_pth = '%s-mask.png' % (name,)
         mask = Image.open(os.path.join(pth, mask_pth))
@@ -732,6 +733,9 @@ class AtariPreprocessing(object):
           locs = np.where(sd < thr[2])
         elif screen[1, 0] == 132:
           locs = np.where(sd < thr[3])
+        else:
+          # Failsafe situation. Just to avoid the program crashing.
+          locs = np.where(sd < thr[0])
       else:
         locs = np.where(sd < thr)  # minimise the squared difference
       if special_case:
