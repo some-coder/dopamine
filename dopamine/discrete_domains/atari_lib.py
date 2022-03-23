@@ -88,7 +88,7 @@ else:
 
 # The number of object channels to use, *if* we use objects. Should minimally
 # be the number of objects for your game.
-DQN_NUM_OBJ = 2
+DQN_NUM_OBJ = 4
 if DQN_SCREEN_MODE == DQNScreenMode.OFF:
   DQN_NUM_OBJ += 1  # for walls and floors
 
@@ -149,16 +149,17 @@ def create_atari_environment(game_name=None, sticky_actions=True):
   atari_check_num_objects(game_name)
   game_version = 'v0' if sticky_actions else 'v4'
   full_game_name = '{}NoFrameskip-{}'.format(game_name, game_version)
-  env = gym.make(full_game_name)
+  full_env = gym.make(full_game_name, render_mode='rgb_array')
   # Strip out the TimeLimit wrapper from Gym, which caps us at 100k frames. We
   # handle this time limit internally instead, which lets us cap at 108k frames
   # (30 minutes). The TimeLimit wrapper also plays poorly with saving and
   # restoring states.
-  env = env.env
+  env = full_env.env
   env = AtariPreprocessing(
     env,
     objects=atari_objects_map(game_name),
-    bg_color=atari_background_color(game_name))
+    bg_color=atari_background_color(game_name),
+    full_env=full_env)
   return env
 
 
@@ -262,17 +263,17 @@ def atari_background_color(game_name: str) -> \
       yield a single value: the grayscale background 'color'.
   """
   if game_name == 'Pong':
-    if DQNScreenMode.RGB:
+    if DQN_SCREEN_MODE == DQNScreenMode.RGB:
       return (np.uint8(144), np.uint8(72), np.uint8(17))
     else:
       return (np.uint8(87),)
   elif game_name == 'FishingDerby':
-    if DQNScreenMode.RGB:
+    if DQN_SCREEN_MODE == DQNScreenMode.RGB:
       return (np.uint8(24), np.uint8(26), np.uint8(167))
     else:
       return (np.uint8(41),)
   elif game_name == 'MsPacman':
-    if DQNScreenMode.RGB:
+    if DQN_SCREEN_MODE == DQNScreenMode.RGB:
       return (np.uint8(0), np.uint8(28), np.uint8(136))
     else:
       return (np.uint8(32),)
@@ -513,8 +514,15 @@ class AtariPreprocessing(object):
   Evaluation Protocols and Open Problems for General Agents".
   """
 
-  def __init__(self, environment, frame_skip=4, terminal_on_life_loss=False,
-               screen_size=84, objects=None, bg_color=None):
+  def __init__(
+      self,
+      environment,
+      frame_skip=4,
+      terminal_on_life_loss=False,
+      screen_size=84,
+      objects=None,
+      bg_color=None,
+      full_env=None):
     """Constructor for an Atari 2600 preprocessor.
 
     Args:
@@ -527,6 +535,8 @@ class AtariPreprocessing(object):
         and thresholds, if such a mapping exists for the game.
       bg_color: `Union[Tuple[np.uint8], Tuple[np.uint8, np.uint8, np.uint8]]`
         or `None`. The background color of the game.
+      full_env: `Optional[gym.wrappers.time_limit.TimeLimit]`. An optional
+        full game to keep track of the raw image frames.
 
     Raises:
       ValueError: if frame_skip or screen_size are not strictly positive.
@@ -556,6 +566,7 @@ class AtariPreprocessing(object):
 
     self.objects = objects
     self.bg_color = bg_color
+    self.full_env = full_env
     self.dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     self.game_name = re.match('[a-zA-Z]+', self.environment.unwrapped.spec.id).group().replace('NoFrameskip', '')
     self.is_ms_pacman = self.game_name == 'MsPacman'
@@ -681,7 +692,7 @@ class AtariPreprocessing(object):
     self.game_over = game_over
     return observation, accumulated_reward, is_terminal, info
 
-  def _fetch_objects_observation(
+  def fetch_objects_observation(
       self,
       obs: np.ndarray) -> Optional[np.ndarray]:
     """Returns `DQN_NUM_OBJ` object layers, if `DQN_USE_OBJECTS` is `True`.
@@ -766,7 +777,7 @@ class AtariPreprocessing(object):
       observation: Numpy array. The current observation in RGB.
     """
     output[:, :, :3] = self.environment.ale.getScreenRGB()
-    return self._fetch_objects_observation(output) if DQN_USE_OBJECTS else output
+    return self.fetch_objects_observation(output) if DQN_USE_OBJECTS else output
 
   def _fetch_grayscale_observation(self, output):
     """Returns the current observation in grayscale.
@@ -780,7 +791,7 @@ class AtariPreprocessing(object):
       observation: numpy array, the current observation in grayscale.
     """
     output[:, :, 0] = self.environment.ale.getScreenGrayscale()
-    return self._fetch_objects_observation(output) if DQN_USE_OBJECTS else output
+    return self.fetch_objects_observation(output) if DQN_USE_OBJECTS else output
 
   def _fetch_screen_off_observation(self, output):
     """Returns the current observation. Only the object channels are supplied.
@@ -793,7 +804,7 @@ class AtariPreprocessing(object):
     Returns:
       observation: numpy array, the current observation in object channels.
     """
-    return self._fetch_objects_observation(output)
+    return self.fetch_objects_observation(output)
 
   def _transform_observation(self, resz, screen, objs=None):
     """Transforms the observation to the size of the screen.
