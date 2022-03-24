@@ -1,11 +1,11 @@
 """Utility symbols for discrete DRL domains."""
 
 
-from optparse import Option
 from dopamine.discrete_domains.atari_lib import \
     DQN_NUM_OBJ, \
     DQN_SCREEN_MODE, \
     DQN_USE_OBJECTS, \
+    NATURE_DQN_OBSERVATION_SHAPE, \
     DQNScreenMode, \
     create_atari_environment, \
     atari_objects_map, \
@@ -17,6 +17,8 @@ import matplotlib.pyplot as plt
 import cv2
 from PIL import Image
 import re
+import os
+from pathlib import Path
 
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -134,6 +136,7 @@ class ObjectSaliencyMapAssistant:
     SUPPORTED_GAMES: List[str] = ['Pong', 'MsPacman']
     DILATE_KERNEL = \
         cv2.getStructuringElement(shape=cv2.MORPH_RECT, ksize=(3, 3))
+    MS_PACMAN_LIVES_BACKGROUND: int = 0  # completely black
     
     # maps grayscale tones to names of instances withina shared category
     PONG_PADDLE_NAMES: Dict[int, str] = \
@@ -147,6 +150,8 @@ class ObjectSaliencyMapAssistant:
         }
     MS_PACMAN_WALL_NAMES: Dict[int, str] = \
         {146: 'pink', 121: 'gray', 170: 'blue', 132: 'green'}
+
+    SAVE_DIR = Path(os.environ['HOME']) / Path(f'Documents/test/saliency-2')
 
     def __init__(self, game: str) -> None:
         assert DQN_USE_OBJECTS
@@ -195,7 +200,7 @@ class ObjectSaliencyMapAssistant:
             self.step(action)
 
     def reset(self) -> None:
-        self.env = self.env.reset()
+        self.env.reset()
         self.buf.empty()
         self.env.full_env.render()
 
@@ -210,7 +215,7 @@ class ObjectSaliencyMapAssistant:
                 bb_arg_val = input(f'{bb_arg}? ')
             bb_args[bb_arg] = int(bb_arg_val)
         bb_args['name'] = input(f'(Name?) ')
-        bb_args['buf_entry'] = input(f'(Index of buffer entry?) ')
+        bb_args['buf_entry'] = int(input(f'(Index of buffer entry?) '))
         plt.close()
         return ObjectBoundingBox(**bb_args)   
 
@@ -283,7 +288,7 @@ class ObjectSaliencyMapAssistant:
         obb_map: Dict[str, List[ObjectBoundingBox]] = \
             {key: [] for key in obb_names}
         for entry in obb_list:
-            obb_map[entry.name] = entry
+            obb_map[entry.name].append(entry)
         return obb_map
 
     @staticmethod
@@ -303,12 +308,13 @@ class ObjectSaliencyMapAssistant:
                 for entry in obb_map[key]:
                     if reduction[entry.buf_entry] is None:
                         reduction[entry.buf_entry] = entry
-                    elif first_non_empty is None:
+                    if first_non_empty is None:
                         first_non_empty = entry
-                for key in [k for k, v in reduction.items() if v is None]:
-                    reduction[key] = first_non_empty
-                    reduction[key].buf_entry = key  # fix buffer indexing
-                obb_map[key] = reduction
+                assert first_non_empty is not None
+                for sub_key in [k for k, v in reduction.items() if v is None]:
+                    reduction[sub_key] = first_non_empty
+                    reduction[sub_key].buf_entry = sub_key  # fix buffer indexing
+                obb_map[key] = list(reduction.values())  # `List[ObjectBoundingBox]`
             for key in self.map_keys_starting_with(obb_map, 'pellet'):
                 if len(obb_map[key]) != 4:
                     del obb_map[key]  # no occlusion at any step
@@ -317,6 +323,29 @@ class ObjectSaliencyMapAssistant:
                 for index, entry in enumerate(obb_map[key]):
                     entry.buf_entry = index  # fix buffer indexing
         return obb_map
+    
+    def quick_ms_pacman_obb_list(self) -> List[ObjectBoundingBox]:
+        assert self.game == 'MsPacman'
+        self.start()
+        self.multi_step('left', 68)
+        out: List[ObjectBoundingBox] = []
+        for index in range(4):
+            print(f'FRAME {index + 1}/4')
+            out.append(self.manually_designate_object_bounding_box())
+            out[-1].name = 'ms-pacman'
+            out[-1].buf_entry = index  # ensure these two fields are legal
+            out += self.automatically_designate_object_bounding_box(
+                name='blinky-red-padded', buf_entry=index
+            )
+            out += self.automatically_designate_object_bounding_box(
+                name='pellet-padded', buf_entry=index
+            )
+            out += self.automatically_designate_object_bounding_box(
+                name='power-pellet-padded', buf_entry=index
+            )
+            self.step('left')
+        return out
+
 
     @staticmethod
     def normal_treatment_applied_to_object_channel(
@@ -386,19 +415,80 @@ class ObjectSaliencyMapAssistant:
                     )
         return obj_chn
 
+    def determined_background_color(self, obb: ObjectBoundingBox) -> int:
+        assert DQN_SCREEN_MODE != DQNScreenMode.RGB  # not supported now
+        if self.game == 'MsPacman' and obb.y_min > 171:
+            return self.MS_PACMAN_LIVES_BACKGROUND
+        else:
+            return self.background_color
+
     def input_with_single_object_removed(
             self,
             obb: ObjectBoundingBox,
-            buf_entry: ObjectSaliencyMapBufferEntry) -> np.ndarray:
+            buf_entry: ObjectSaliencyMapBufferEntry) -> \
+                Tuple[np.ndarray, np.ndarray]:
         if DQN_SCREEN_MODE == DQNScreenMode.RGB:
             raw_copy = np.copy(buf_entry.raw_rgb_frame)
         else:
             raw_copy = np.copy(buf_entry.raw_gray_frame)
         raw_copy[obb.y_min:obb.y_max, obb.x_min:obb.x_max] = \
-            self.background_color
+            self.determined_background_color(obb)
         out = self.object_channels_from_raw_image(raw_copy)
         if DQN_SCREEN_MODE != DQNScreenMode.OFF:
             if DQN_SCREEN_MODE == DQNScreenMode.GRAYSCALE:
                 raw_copy = np.expand_dims(raw_copy, axis=-1)
             out = np.concatenate((raw_copy, out), axis=-1)
-        return out
+        return out, raw_copy
+
+    def inputs_with_objects_removed(
+            self,
+            obb_map: Dict[str, List[ObjectBoundingBox]]) -> \
+                Dict[str, List[Tuple[np.ndarray, np.ndarray]]]:
+        d: Dict[str, List[Tuple[np.ndarray, np.ndarray]]] = {}
+        for name, obbs in obb_map.items():
+            d[name] = []
+            for index, buf_entry in enumerate(self.buf.buf):
+                d[name].append(
+                    self.input_with_single_object_removed(
+                        obbs[index], buf_entry
+                    )
+                )
+        return d
+    
+    def resized_inputs(
+            self,
+            inputs: Dict[str, List[Tuple[np.ndarray, np.ndarray]]]) -> \
+                Dict[str, List[Tuple[np.ndarray, np.ndarray]]]:
+        for key in inputs.keys():
+            for index in range(len(inputs[key])):
+                inputs[key][index] = (
+                    cv2.resize(
+                        inputs[key][index][0],
+                        NATURE_DQN_OBSERVATION_SHAPE[:2],
+                        cv2.INTER_AREA
+                    ),
+                    inputs[key][index][1]  # leave raw as-is
+                )
+        return inputs
+    
+    def save_inputs(
+            self,
+            inputs: Dict[str, List[Tuple[np.ndarray, np.ndarray]]],
+            scene_name: str) -> None:
+        root = self.SAVE_DIR / Path(scene_name)
+        if not os.path.exists(root):
+            os.makedirs(root)
+        elif len(os.listdir(root)) > 0:
+            raise FileExistsError(f'Remove all content in \'{root}\' first!')
+        for obj_name, inp in inputs.items():
+            obj_dir = root / Path(obj_name)
+            os.makedirs(obj_dir)
+            for index, (preprocessed, raw) in enumerate(inp):
+                Image.fromarray(
+                    raw, mode=('L' if len(raw.shape) == 2 else None)
+                ).save(obj_dir / f'raw-{index}.png')
+                for chn_idx in range(preprocessed.shape[2]):
+                    chn_img = Image.fromarray(
+                        preprocessed[..., chn_idx].astype(np.uint8), mode='L'
+                    )
+                    chn_img.save(obj_dir / f'processed-{index}-{chn_idx}.png')
