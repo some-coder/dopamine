@@ -88,7 +88,7 @@ else:
 
 # The number of object channels to use, *if* we use objects. Should minimally
 # be the number of objects for your game.
-DQN_NUM_OBJ = 4
+DQN_NUM_OBJ = 2
 if DQN_SCREEN_MODE == DQNScreenMode.OFF:
   DQN_NUM_OBJ += 1  # for walls and floors
 

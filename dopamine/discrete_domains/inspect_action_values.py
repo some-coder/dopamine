@@ -19,7 +19,7 @@ SALIENCY_PATH = \
       '/data/s3366235/master-thesis/'
       if re.search('s3366235', os.environ['HOME']) else
       '/home/niels/Documents/test/'
-    ) + 'saliency/'
+    ) + 'saliency-2/'
 
 
 Difference = namedtuple('Difference', ['dx', 'dy', 'show'])
@@ -111,7 +111,7 @@ def create_object_saliency_map(runner, name, obj_list):
   
   original_obs = load_observations_sequence_end(
     SALIENCY_PATH,
-    name + '/original'
+    name + '/origin'
   )
   original_eval = runner.state_action_evaluations(original_obs)
   best_act, best_val = list(original_eval.items())[0]
@@ -135,11 +135,14 @@ def create_object_saliency_map(runner, name, obj_list):
     )
     obj_val = runner.state_action_evaluations(obj_obs)[best_act]
     val_diff = best_val - obj_val
-    for layer in range(DQN_NUM_OBJ if DQN_USE_OBJECTS else 0):
+    number_layers = DQN_NUM_OBJ if DQN_USE_OBJECTS else 0
+    for layer in range(number_layers):
       # We consider the last (newest) frame only: the valuation applies
       # to the complete sequence of four observations, so it doesn't
       # really matter which frame we pick.
       layer_idx = -(DQN_NUM_OBJ - layer)
+      if DQN_SCREEN_MODE == DQNScreenMode.OFF and layer == number_layers - 1:
+        continue  # don't consider walls and roads
       obs_diff = original_obs[0, ..., layer_idx] - obj_obs[0, ..., layer_idx]
       map[np.where(obs_diff > 0)] = val_diff
   return map

@@ -25,8 +25,9 @@ from dopamine.discrete_domains import run_experiment
 import tensorflow as tf
 import dopamine.discrete_domains.inspect_action_values as iav
 import matplotlib.pyplot as plt
-
 import numpy as np
+
+import os
 
 
 flags.DEFINE_string('base_dir', None,
@@ -50,11 +51,6 @@ def main(unused_argv):
   Args:
     unused_argv: Arguments (unused).
   """
-  NUMPY_SEED = 1
-  TENSORFLOW_SEED = 1
-
-  np.random.seed(NUMPY_SEED)
-  tf.random.set_seed(TENSORFLOW_SEED)
 
   logging.set_verbosity(logging.INFO)
   tf.compat.v1.disable_v2_behavior()
@@ -65,34 +61,23 @@ def main(unused_argv):
   run_experiment.load_gin_configs(gin_files, gin_bindings)
   runner = run_experiment.create_runner(base_dir)
 
-  INSPECT_ACTION_VALUATIONS = False
+  INSPECT_ACTION_VALUATIONS = True
+  scene_dir = 'pong-lose'
 
   if INSPECT_ACTION_VALUATIONS:
     # name = input('(Name of saliency subdirectory?) ')
     # iav.inspect_action_valuations(runner, name)
     map = iav.create_object_saliency_map(
-      runner,
-      'ms-pacman',
-      [
-        'pellet-%d' % (pel_idx) for pel_idx in range(215)
-      ] +
-      [
-        '%s-ghost-disappear' % (gh,) for gh in
-        (
-          'bottom-right',
-          'middle-left',
-          'middle-right',
-          'top-left'
-        )
-      ] +
-      [
-        'ms-pacman-%sdisappear' % (add,) for add in
-        (
-          '',
-          'first-life-',
-          'second-life-'
-        )
-      ]
+      runner=runner,
+      name=scene_dir,
+      obj_list=list(
+        set(os.listdir(iav.SALIENCY_PATH + scene_dir)) -
+        set(['origin'])
+      )
+    )
+    np.save(
+      iav.SALIENCY_PATH + f'{scene_dir}/object-saliency.npy',
+      arr=map
     )
     
     _, ax = plt.subplots()
@@ -104,7 +89,7 @@ def main(unused_argv):
     bar.set_label('Q-value difference')
 
     plt.tight_layout()
-    plt.savefig(iav.SALIENCY_PATH + 'ms-pacman/obj-sal-map.pdf')
+    plt.savefig(iav.SALIENCY_PATH + f'{scene_dir}/object-saliency-map.pdf')
   else:
     runner.run_experiment()
 

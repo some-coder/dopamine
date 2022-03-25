@@ -34,6 +34,7 @@ class AtariActionMap:
     down: int
     left: Optional[int] = None
     right: Optional[int] = None
+    noop: Optional[int] = None
 
 
 @dataclass
@@ -41,6 +42,7 @@ class PongActionMap(AtariActionMap):
     """A mapping from integers to Atari 2600 Pong movements."""
     up: int = 2
     down: int = 5
+    noop: Optional[int] = 0
 
 
 @dataclass
@@ -186,6 +188,8 @@ class ObjectSaliencyMapAssistant:
             int_action = self.map.left
         elif action == 'right':
             int_action = self.map.right
+        elif action == 'noop':
+            int_action = self.map.noop
         else:
             raise ValueError(f'Action {action} isn\'t a legal value.')
         obs, _, _, _ = self.env.step(int_action)
@@ -228,7 +232,7 @@ class ObjectSaliencyMapAssistant:
         assert DQN_SCREEN_MODE != DQNScreenMode.RGB  # won't work
         if self.game == 'Pong':
             if template_name == 'paddle-piece-wide':
-                return self.PONG_PADDLE_NAMES[int(img[0, 1])]
+                return self.PONG_PADDLE_NAMES[int(img[0, 6])]
             elif template_name == 'ball-padded':
                 return 'ball'
         elif self.game == 'MsPacman':
@@ -298,7 +302,7 @@ class ObjectSaliencyMapAssistant:
     def cleaned_obb_map(self, obb_map: Dict[str, List[ObjectBoundingBox]]) -> \
             Dict[str, List[ObjectBoundingBox]]:
         if self.game == 'Pong':
-            raise NotImplementedError(f'Pong is not yet implemented!')
+            pass  # no work needed: assumed to be fully manual
         elif self.game == 'MsPacman':
             ghost_re: str = '|'.join(('blinky', 'clyde', 'inky', 'pinky'))
             for key in self.map_keys_starting_with(obb_map, ghost_re):
@@ -480,6 +484,10 @@ class ObjectSaliencyMapAssistant:
             os.makedirs(root)
         elif len(os.listdir(root)) > 0:
             raise FileExistsError(f'Remove all content in \'{root}\' first!')
+        original_list = [
+            (be.preprocessed_frame, be.raw_gray_frame) for be in self.buf.buf
+        ]
+        inputs.update({'original': original_list})
         for obj_name, inp in inputs.items():
             obj_dir = root / Path(obj_name)
             os.makedirs(obj_dir)
@@ -492,3 +500,23 @@ class ObjectSaliencyMapAssistant:
                         preprocessed[..., chn_idx].astype(np.uint8), mode='L'
                     )
                     chn_img.save(obj_dir / f'processed-{index}-{chn_idx}.png')
+
+    @staticmethod
+    def repair_scene_directory(
+            scene_name: str,
+            obj_dir_1: str,
+            obj_dir_2: str) -> None:
+        root = ObjectSaliencyMapAssistant.SAVE_DIR / Path(scene_name)
+        origin_dir = root / 'origin'
+        if not os.path.exists(origin_dir):
+            os.makedirs(origin_dir)
+        elif len(os.listdir(origin_dir)) > 0:
+            raise FileExistsError(
+                f'Remove all content in \'{origin_dir}\' first!'
+            )
+        for img_name in os.listdir(root / obj_dir_1):
+            img_1 = Image.open(root / obj_dir_1 / img_name)
+            img_2 = Image.open(root / obj_dir_2 / img_name)
+            merged = np.maximum(np.array(img_1), np.array(img_2))
+            merged = merged.astype(np.uint8)
+            Image.fromarray(merged).save(origin_dir / img_name)
