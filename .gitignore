@@ -1,3 +1,6 @@
 __pycache__/
 *.code-workspace
-
+debug-data/
+data/
+dopamine/additions/morel_new/hparams
+dopamine/additions/morel_new/default-hyper-params.json
