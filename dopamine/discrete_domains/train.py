@@ -50,12 +50,6 @@ def main(unused_argv):
   Args:
     unused_argv: Arguments (unused).
   """
-  NUMPY_SEED = 1
-  TENSORFLOW_SEED = 1
-
-  np.random.seed(NUMPY_SEED)
-  tf.random.set_seed(TENSORFLOW_SEED)
-
   logging.set_verbosity(logging.INFO)
   tf.compat.v1.disable_v2_behavior()
 
