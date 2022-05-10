@@ -1,6 +1,12 @@
+# Python
 __pycache__/
 *.code-workspace
+
+# Project-specific ignores
 debug-data/
+experiments
+data
 data/
 dopamine/additions/morel_new/hparams
 dopamine/additions/morel_new/default-hyper-params.json
+run.sh

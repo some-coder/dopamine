@@ -22,7 +22,7 @@ from absl import flags
 from absl import logging
 
 from dopamine.discrete_domains import run_experiment
-import tensorflow as tf
+import tensorflow as tf2
 import dopamine.discrete_domains.inspect_action_values as iav
 import matplotlib.pyplot as plt
 
@@ -51,7 +51,9 @@ def main(unused_argv):
     unused_argv: Arguments (unused).
   """
   logging.set_verbosity(logging.INFO)
-  tf.compat.v1.disable_v2_behavior()
+  
+  tf = tf2.compat.v1
+  tf.disable_v2_behavior()
 
   base_dir = FLAGS.base_dir
   gin_files = FLAGS.gin_files
@@ -100,7 +102,28 @@ def main(unused_argv):
     plt.tight_layout()
     plt.savefig(iav.SALIENCY_PATH + 'ms-pacman/obj-sal-map.pdf')
   else:
-    runner.run_experiment()
+    # runner.run_experiment()
+    # out = runner._sess.run(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES))
+    # print(f'Length of `out`: {len(out)}')
+    runner._environment.restore_morel_model()
+    runner._environment.reset()
+    for index in range(500):
+      obs, _, _, _ = runner._environment.step(runner._environment.action_space.sample())
+      if index % 10 == 0 and index > 280:
+        _, ax = plt.subplots(2, 4)
+        ax[0, 0].imshow(obs[..., 0], cmap='gist_gray')
+        ax[0, 1].axis('off')
+        ax[0, 2].axis('off')
+        ax[0, 3].axis('off')
+        ax[1, 0].imshow(obs[..., 1], cmap='gist_gray')
+        ax[1, 1].imshow(obs[..., 2], cmap='gist_gray')
+        ax[1, 2].imshow(obs[..., 3], cmap='gist_gray')
+        ax[1, 3].imshow(obs[..., 4], cmap='gist_gray')
+        plt.show()
+    
+    # print('Reset. Starting a new iteration.')
+    # runner._run_one_iteration(0)
+    # print('Done with iteration.')
 
 
 if __name__ == '__main__':

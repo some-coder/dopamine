@@ -40,8 +40,16 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import tensorflow as tf2
+
 import collections
 import math
+
+# Imports for MOREL.
+import json
+import copy
+import matplotlib.pyplot as plt
+from dopamine.additions.morel_new.object_segmentation_network import ObjectSegmentationNetwork
 
 from absl import logging
 
@@ -59,6 +67,11 @@ from PIL import Image
 from enum import Enum
 import matplotlib.pyplot as plt
 
+from typing import Optional
+
+
+tf = tf2.compat.v1
+tf.disable_v2_behavior()
 
 
 class DQNScreenMode(Enum):
@@ -71,12 +84,12 @@ class DQNScreenMode(Enum):
 
 
 # The way of representing the screen in the DQN input.
-DQN_SCREEN_MODE = DQNScreenMode.OFF
+DQN_SCREEN_MODE = DQNScreenMode.GRAYSCALE
 
 # Whether to introduce object channels. Number of channels may vary per game.
 # If `DQNScreenMode` is set to `OFF`, then `DQN_USE_OBJECTS` is automatically
 # `True`.
-DQN_USE_OBJECTS = True
+DQN_USE_OBJECTS = False
 if DQN_SCREEN_MODE == DQN_SCREEN_MODE.OFF:
   DQN_USE_OBJECTS = True  # for if it were `False`, we would have nothing
 
@@ -104,11 +117,21 @@ elif DQN_SCREEN_MODE == DQNScreenMode.RGB:
 # The number of channels dedicated to the objects.
 # May be zero in the case that `DQN_USE_OBJECTS == False`.
 DQN_OBJ_LAY = DQN_NUM_OBJ if DQN_USE_OBJECTS else 0
+DQN_NUM_OBJ = DQN_OBJ_LAY
+
+# MOREL-hyperparameters.
+DQN_MOREL_LAY: int = 4  # the number of objects captured by MOREL
+DQN_MOREL_PATH: str = '/data/s3366235/master-thesis/dopamine/3/experiments/my-pong-experiment/ckpts/env=Pong,algorithm=a2c'
+DQN_MOREL_HPARAMS_PATH: str = '/home/s3366235/documents/drl/morel/json-files/pong-dop.json'  # '/data/s3366235/master-thesis/dopamine/3/dopamine/additions/morel_new/my-hparam.json'
+if DQN_MOREL_LAY > 0:
+  # MOREL needs grayscale images from input.
+  assert DQN_SCREEN_MODE == DQNScreenMode.GRAYSCALE
+
 
 NATURE_DQN_OBSERVATION_SHAPE = (
   84,
   84,
-  DQN_SCREEN_LAY + DQN_OBJ_LAY
+  DQN_SCREEN_LAY + DQN_OBJ_LAY + DQN_MOREL_LAY
 )
 NATURE_DQN_DTYPE = tf.uint8  # DType of Atari 2600 observations.
 NATURE_DQN_STACK_SIZE = 4  # Number of frames in the state stack.
@@ -122,7 +145,9 @@ ImplicitQuantileNetworkType = collections.namedtuple(
 
 
 @gin.configurable
-def create_atari_environment(game_name=None, sticky_actions=True):
+def create_atari_environment(game_name=None,
+                             sticky_actions=True,
+                             sess: Optional[tf.Session] = None):
   """Wraps an Atari 2600 Gym environment with some basic preprocessing.
 
   This preprocessing matches the guidelines proposed in Machado et al. (2017),
@@ -141,12 +166,14 @@ def create_atari_environment(game_name=None, sticky_actions=True):
   Args:
     game_name: str, the name of the Atari 2600 domain.
     sticky_actions: bool, whether to use sticky_actions as per Machado et al.
+    sess: An optional TensorFlow V1 `Session`.
 
   Returns:
     An Atari 2600 environment with some standard preprocessing.
   """
   assert game_name is not None
-  atari_check_num_objects(game_name)
+  if DQN_USE_OBJECTS:
+    atari_check_num_objects(game_name)
   game_version = 'v0' if sticky_actions else 'v4'
   full_game_name = '{}NoFrameskip-{}'.format(game_name, game_version)
   env = gym.make(full_game_name)
@@ -158,7 +185,8 @@ def create_atari_environment(game_name=None, sticky_actions=True):
   env = AtariPreprocessing(
     env,
     objects=atari_objects_map(game_name),
-    bg_color=atari_background_color(game_name))
+    bg_color=atari_background_color(game_name),
+    sess=sess)
   return env
 
 
@@ -513,8 +541,14 @@ class AtariPreprocessing(object):
   Evaluation Protocols and Open Problems for General Agents".
   """
 
-  def __init__(self, environment, frame_skip=4, terminal_on_life_loss=False,
-               screen_size=84, objects=None, bg_color=None):
+  def __init__(self,
+               environment,
+               frame_skip=4,
+               terminal_on_life_loss=False,
+               screen_size=84,
+               objects=None,
+               bg_color=None,
+               sess: Optional[tf.Session] = None):
     """Constructor for an Atari 2600 preprocessor.
 
     Args:
@@ -527,6 +561,7 @@ class AtariPreprocessing(object):
         and thresholds, if such a mapping exists for the game.
       bg_color: `Union[Tuple[np.uint8], Tuple[np.uint8, np.uint8, np.uint8]]`
         or `None`. The background color of the game.
+      sess: An optional TensorFlow V1 `Session`.
 
     Raises:
       ValueError: if frame_skip or screen_size are not strictly positive.
@@ -560,6 +595,49 @@ class AtariPreprocessing(object):
     self.game_name = re.match('[a-zA-Z]+', self.environment.unwrapped.spec.id).group().replace('NoFrameskip', '')
     self.is_ms_pacman = self.game_name == 'MsPacman'
 
+    self.sess = sess
+    self.morel_model = None
+    self.last_two_max_grays = np.zeros(shape=tuple(NATURE_DQN_OBSERVATION_SHAPE[:2]) + (2,), dtype=np.uint8)
+    if self.sess is not None and DQN_MOREL_LAY > 0:
+      with open(DQN_MOREL_HPARAMS_PATH) as handle:
+        hparams = json.load(handle)
+      hparams['batch_size'] = 1  # for inference  # TODO(Niels): Does this actually work?
+      hparams['num_actions'] = self.environment.action_space.n
+      self.morel_model = ObjectSegmentationNetwork(hparams=copy.deepcopy(hparams),
+                                                   use_as_predictor=True,
+                                                   trainable=False)
+
+  def restore_morel_model(self) -> None:
+    saver = tf.train.Saver(var_list=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='model'),
+                           max_to_keep=3)
+    restore_dir = os.path.join(self.morel_model.hparams['base_dir'],
+                               'ckpts',
+                               self.morel_model.hparams['experiment_name'])  # hparams['restore_from_ckpt_path']
+    ckpt_path = tf.compat.v1.train.latest_checkpoint(checkpoint_dir=restore_dir)
+    if ckpt_path is None:
+        print('\n\tNo checkpoint exists. Starting from scratch.\n')
+    else:
+        step_match = re.search('[0-9]+$', str(ckpt_path))
+        start_step = int(step_match.group()) + 1  # avoid overwriting the save we start from
+        print(f'\n\tGot checkpoint path \'{ckpt_path}\'.\n')
+        print(f'\n\tSet the start step to {start_step}.\n')
+        saver.restore(self.sess, ckpt_path)
+
+  def test_morel_model(self) -> None:
+    fd = {self.morel_model.frames_placeholder: 125 * np.ones(shape=(16, 84, 84, 2), dtype=np.uint8),
+          # self.morel_model.learning_rate: 0.,  # to avoid training, just in case
+          self.morel_model.mask_reg_c: 0.  # shouldn't be relevant if not training
+    }
+    out = self.sess.run(self.morel_model.object_masks, feed_dict=fd)
+    print(f'Output shape (object masks): {out.shape}')
+    print(f'Output type (object masks): {out.dtype}')
+    _, ax = plt.subplots(2, 2)
+    ax[0, 0].imshow(out[0, ..., 0], cmap='gist_gray')
+    ax[0, 1].imshow(out[0, ..., 1], cmap='gist_gray')
+    ax[1, 0].imshow(out[0, ..., 2], cmap='gist_gray')
+    ax[1, 1].imshow(out[0, ..., 3], cmap='gist_gray')
+    plt.show()
+
   @property
   def observation_space(self):
     # Return the observation space adjusted to match the shape of the processed
@@ -592,6 +670,10 @@ class AtariPreprocessing(object):
     self.environment.reset()
     self.lives = self.environment.ale.lives()
     
+    # We can't only partially fill `last_two_max_grays` like we do with `screen_buffer`,
+    # because unlike the latter we use `last_two_max_grays` immediately again in
+    # `_fetch_grayscale_observation`. To avoid incorrect data, all needs to be wiped.
+    self.last_two_max_grays.fill(0)
     if DQN_SCREEN_MODE == DQNScreenMode.RGB:
       self._fetch_rgb_observation(self.screen_buffer[0])
     elif DQN_SCREEN_MODE == DQNScreenMode.GRAYSCALE:
@@ -704,7 +786,8 @@ class AtariPreprocessing(object):
       return None  # if we get here, the caller (me) likely made a mistake
     
     keys = list(self.objects.keys())
-    obs[..., DQN_SCREEN_LAY:].fill(0)  # Remove all previous contents. Use pass-by-reference.
+    # Remove all previous contents. Use pass-by-reference.
+    obs[..., DQN_SCREEN_LAY:(DQN_SCREEN_LAY + DQN_OBJ_LAY)].fill(0)
     
     # stand-in for `obs[..., :DQN_SCREEN_LAY]` in case we only store
     # object channels
@@ -754,6 +837,31 @@ class AtariPreprocessing(object):
     
     return obs
 
+  def _fetch_morel_observation(self, obs: np.ndarray) -> np.ndarray:
+    if DQN_MOREL_LAY == 0:
+      return obs
+    # Oldest frame first, just like in the frames buffer. Note that `frames` lags
+    # one four-step cycle behind, because we need to feed max-pooled frames, not
+    # simply frames as with object templates.
+    #   Shape: (1, 84, 84, 2).
+    frames = np.stack((self.last_two_max_grays[..., 0],
+                       self.last_two_max_grays[..., 1]),
+                      axis=-1)[np.newaxis, ...]  # `np.newaxis` needed: single-sample 'batch'
+    fd = {self.morel_model.frames_placeholder: frames,
+          # self.morel_model.learning_rate: 0.,  # to avoid training, just in case
+          self.morel_model.mask_reg_c: 0.  # shouldn't be relevant if not training
+    }
+    # Output: (1, 84, 84, NUM_MOREL_LAY) (usually 4), dtype `np.float32`.
+    morel_result = self.sess.run(self.morel_model.object_masks, feed_dict=fd)
+    
+    locs = np.where(morel_result[0, ...] > .1)  # any (significantly) nonzero value will be regarded as object mask
+    locs_map = np.zeros(shape=tuple(NATURE_DQN_OBSERVATION_SHAPE[:2]) + (DQN_MOREL_LAY,), dtype=np.uint8)
+    locs_map[locs] = 255
+    obs[..., (DQN_SCREEN_LAY + DQN_OBJ_LAY):] = cv2.resize(locs_map,
+                                                           obs.shape[:2][::-1],  # width, height in OpenCV
+                                                           cv2.INTER_AREA)
+    return obs
+
   def _fetch_rgb_observation(self, output):
     """Returns the current observation in full colour (RGB).
 
@@ -780,7 +888,8 @@ class AtariPreprocessing(object):
       observation: numpy array, the current observation in grayscale.
     """
     output[:, :, 0] = self.environment.ale.getScreenGrayscale()
-    return self._fetch_objects_observation(output) if DQN_USE_OBJECTS else output
+    output[...] = self.fetch_objects_observation(output) if DQN_USE_OBJECTS else output
+    return self._fetch_morel_observation(output) if DQN_MOREL_LAY > 0 else output
 
   def _fetch_screen_off_observation(self, output):
     """Returns the current observation. Only the object channels are supplied.
@@ -795,13 +904,14 @@ class AtariPreprocessing(object):
     """
     return self._fetch_objects_observation(output)
 
-  def _transform_observation(self, resz, screen, objs=None):
+  def _transform_observation(self, resz, screen, obj_and_mot_channels=None):
     """Transforms the observation to the size of the screen.
     
     Args:
       resz: The resized output. To be written to.
       screen: The raw screen footage. RGB or grayscale.
-      objs: `None` or a rank 3 tensor. The channels store objects.
+      obj_and_mot_channels: `None` or a rank 3 tensor. It stores objects
+        and motion masks on its channel dimensions.
     
     Returns:
       Nothing. See the output in `resz` instead.
@@ -816,13 +926,13 @@ class AtariPreprocessing(object):
         screen[..., :DQN_SCREEN_LAY],
         (self.screen_size, self.screen_size),
         cv2.INTER_AREA)[..., np.newaxis]
-    if not DQN_USE_OBJECTS:
+    if (not DQN_USE_OBJECTS) and (DQN_MOREL_LAY == 0):
       return resz
-    for index in range(DQN_NUM_OBJ):
+    for index in range(DQN_NUM_OBJ + DQN_MOREL_LAY):
       # No enclosing square braces around `index`: `resize` for 1 channel
       # yields 2D image (not a 3D one).
       resz[..., DQN_SCREEN_LAY + index] = cv2.resize(
-        objs[..., [index]],
+        obj_and_mot_channels[..., [index]],
         (self.screen_size, self.screen_size),
         cv2.INTER_AREA)
     return resz
@@ -844,7 +954,7 @@ class AtariPreprocessing(object):
         out=self.screen_buffer[0][..., :DQN_SCREEN_LAY])
     
     resz = np.zeros(NATURE_DQN_OBSERVATION_SHAPE, dtype=np.uint8)
-    if DQN_USE_OBJECTS:
+    if DQN_USE_OBJECTS or DQN_MOREL_LAY > 0:
       if self.frame_skip > 1:
         # If we have objects, also max-pool over the object channels.
         np.maximum(
@@ -855,9 +965,13 @@ class AtariPreprocessing(object):
       # the RGB (or grayscale) channel(s) along with the object channels
       self._transform_observation(
         resz,
-        self.screen_buffer[0][..., :DQN_SCREEN_LAY],
-        self.screen_buffer[0][..., DQN_SCREEN_LAY:])
+        screen=self.screen_buffer[0][..., :DQN_SCREEN_LAY],
+        obj_and_mot_channels=self.screen_buffer[0][..., DQN_SCREEN_LAY:])
       int_screen = np.asarray(resz, dtype=np.uint8)
+
+      self.last_two_max_grays = np.roll(self.last_two_max_grays, shift=-1, axis=-1)
+      self.last_two_max_grays[..., -1] = int_screen[..., 0]
+
       return int_screen
     else:
       # just resize the RGB (or grayscale) channel(s)
@@ -879,17 +993,23 @@ class AtariPreprocessing(object):
     if self.frame_skip > 1:
       screen_0 = np.mean([screen_0, screen_1], axis=0).astype(np.uint8)
     
-    if DQN_USE_OBJECTS:
-      obj_channels_0 = self.screen_buffer[0][..., DQN_SCREEN_LAY:]
-      obj_channels_1 = self.screen_buffer[1][..., DQN_SCREEN_LAY:]
+    resz = np.zeros(NATURE_DQN_OBSERVATION_SHAPE, dtype=np.uint8)
+    if DQN_USE_OBJECTS or DQN_MOREL_LAY > 0:
+      obj_mot_chn_0 = self.screen_buffer[0][..., DQN_SCREEN_LAY:]
+      obj_mot_chn_1 = self.screen_buffer[1][..., DQN_SCREEN_LAY:]
       if self.frame_skip > 1:
-        np.maximum(obj_channels_0, obj_channels_1, out=obj_channels_0)
+        np.maximum(obj_mot_chn_0, obj_mot_chn_1, out=obj_mot_chn_0)
       # resizing happens per-channel, so we can jointly resize
       # the RGB (or grayscale) channel(s) along with the object channels
-      transformed_screen = self._transform_observation(screen_0, obj_channels_0)
-      int_screen = np.asarray(transformed_screen, dtype=np.uint8)
+      self._transform_observation(
+        resz,
+        screen=screen_0,
+        obj_and_mot_channels=obj_mot_chn_0)
+      int_screen = np.asarray(resz, dtype=np.uint8)
       return int_screen
     else:
-      transformed_screen = self._transform_observation(screen_0)
-      int_screen = np.asarray(transformed_screen, dtype=np.uint8)
+      self._transform_observation(
+        resz,
+        screen=screen_0)
+      int_screen = np.asarray(resz, dtype=np.uint8)
       return int_screen

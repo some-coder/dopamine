@@ -226,13 +226,13 @@ class Runner(object):
     self._create_directories()
     self._summary_writer = tf.compat.v1.summary.FileWriter(self._base_dir)
 
-    self._environment = create_environment_fn()
     config = tf.compat.v1.ConfigProto(allow_soft_placement=True)
     # Allocate only subset of the GPU memory as needed which allows for running
     # multiple agents/workers on the same GPU.
     config.gpu_options.allow_growth = True
     # Set up a session and initialize variables.
     self._sess = tf.compat.v1.Session('', config=config)
+    self._environment = create_environment_fn(sess=self._sess)
     self._agent = create_agent_fn(self._sess, self._environment,
                                   summary_writer=self._summary_writer)
     self._summary_writer.add_graph(graph=tf.compat.v1.get_default_graph())
@@ -548,7 +548,7 @@ class Runner(object):
 
     Args:
       state: The state. A `(1, obs_dim.shape[:2], NATURE_DQN_STACK_SIZE *
-      (DQN_SCREEN_LAY + DQN_OBJ_LAY))`.
+      (DQN_SCREEN_LAY + DQN_OBJ_LAY + DQN_MOREL_LAY))`.
     Returns:
       evals: The action evaluations for the state.
     """
