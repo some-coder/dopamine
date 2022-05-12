@@ -39,12 +39,14 @@ from dopamine.jax.agents.rainbow import rainbow_agent as jax_rainbow_agent
 
 import numpy as np
 import tensorflow as tf
+import matplotlib.pyplot as plt
 
 import gin.tf
 
 import cv2
 from collections import namedtuple
 from dopamine.discrete_domains.atari_lib import \
+  DQN_MOREL_LAY, \
   DQNScreenMode, \
   DQN_NUM_OBJ, \
   DQN_SCREEN_MODE, \
@@ -239,6 +241,11 @@ class Runner(object):
     self._sess.run(tf.compat.v1.global_variables_initializer())
 
     self._initialize_checkpointer_and_maybe_resume(checkpoint_file_prefix)
+
+    if DQN_MOREL_LAY > 0:
+      print('\n\tRestoring MOREL model!\n')
+      self._environment.restore_morel_model()
+      print('\n\tSuccessfully restored MOREL model.\n')
 
   def _create_directories(self):
     """Create necessary sub-directories."""
