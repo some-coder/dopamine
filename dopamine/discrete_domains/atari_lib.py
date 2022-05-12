@@ -103,7 +103,7 @@ else:
 # be the number of objects for your game.
 DQN_NUM_OBJ = 2
 if DQN_SCREEN_MODE == DQNScreenMode.OFF:
-  DQN_NUM_OBJ += 1  # for walls and floors
+  DQN_NUM_OBJ += 1
 
 # The number of channels dedicated to the raw screen footage.
 # May be zero in the case that `DQN_SCREEN_MODE == .OFF`.
@@ -238,18 +238,21 @@ def atari_objects_map(game_name: str) -> \
   li: Optional[Tuple[Tuple[str, Union[float, Tuple[float, ...]], bool]]] = None
 
   if game_name == 'Pong':
-    li = (
-      ('paddle-piece-wide', 0.01, False),
-      ('ball-padded', 0.15, False)
-    )
+    li = (('paddle-piece-wide', 0.01, False),
+          ('ball-padded', 0.15, False))
     if DQN_SCREEN_MODE == DQNScreenMode.OFF:
       li = li + (('wall', 0.014, False),)
   elif game_name == 'FishingDerby':
-    raise ValueError('You need to update the values for FishingDerby!')
-    # li = (
-    #   ('tackle', 0.8),
-    #   ('fish', 0.6),
-    #   ('shark', 0.6))
+    li = (('new-fish', .24, False),
+          ('new-shark', .2, False),
+          ('new-tackle-2', .3, False))
+    if DQN_SCREEN_MODE == DQNScreenMode.OFF:
+      li = li + (('pier', .8, False),)
+  elif game_name == 'Freeway':
+    li = (('new-green-car-img', 3e-7, False),
+          ('new-chicken', .05, False))
+    if DQN_SCREEN_MODE == DQNScreenMode.OFF:
+      li = li + (('walkway', .01, False))
   elif game_name == 'MsPacman':
     li = (
       ('yellow-2', 0.001, False),  # for matching Ms. Pac-Man
@@ -296,9 +299,14 @@ def atari_background_color(game_name: str) -> \
       return (np.uint8(87),)
   elif game_name == 'FishingDerby':
     if DQNScreenMode.RGB:
-      return (np.uint8(24), np.uint8(26), np.uint8(167))
+      return (np.uint8(24), np.uint8(26), np.uint8(167))  # ocean's blue
     else:
       return (np.uint8(41),)
+  elif game_name == 'Freeway':
+    if DQNScreenMode.RGB:
+      return (np.uint8(142), np.uint8(142), np.uint8(142))  # road's grey
+    else:
+      return (np.uint8(142),)
   elif game_name == 'MsPacman':
     if DQNScreenMode.RGB:
       return (np.uint8(0), np.uint8(28), np.uint8(136))
@@ -319,6 +327,8 @@ def atari_check_num_objects(game_name: str) -> None:
   if game_name == 'Pong' and num_obj == 2:
     return
   elif game_name == 'FishingDerby' and num_obj == 3:
+    return
+  elif game_name == 'Freeway' and num_obj == 2:
     return
   elif game_name == 'MsPacman' and num_obj == 4:
     return
